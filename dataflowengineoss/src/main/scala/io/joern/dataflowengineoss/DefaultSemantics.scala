@@ -122,7 +122,6 @@ object DefaultSemantics {
       FlowSemantic("java.util..*\\.put:.*", List(FlowMapping(2, 0), FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.util..*\\.putIfAbsent:.*", List(FlowMapping(2, 0), FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.util..*\\.putAll:.*", List(FlowMapping(1, 0)), regex = true),
-      FlowSemantic("java.util..*\\.get:.*", List(FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.util..*\\.getOrDefault:.*", List(FlowMapping(0, -1), FlowMapping(2, -1)), regex = true),
       FlowSemantic("java.util..*\\.remove:.*", List(FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.util..*\\.values:.*", List(FlowMapping(0, -1)), regex = true),
