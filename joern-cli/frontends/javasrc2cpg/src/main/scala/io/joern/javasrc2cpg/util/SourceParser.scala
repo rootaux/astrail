@@ -71,7 +71,7 @@ class SourceParser(
   private def parse(file: Path, storeTokens: Boolean): Option[CompilationUnit] = {
     val javaParserConfig =
       new ParserConfiguration()
-        .setLanguageLevel(LanguageLevel.JAVA_25)
+        .setLanguageLevel(LanguageLevel.JAVA_17)
         .setStoreTokens(storeTokens)
     val parseResult = new JavaParser(javaParserConfig).parse(file)
 

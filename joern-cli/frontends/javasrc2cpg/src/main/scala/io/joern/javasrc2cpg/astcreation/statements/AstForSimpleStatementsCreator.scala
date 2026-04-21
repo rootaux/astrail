@@ -20,7 +20,8 @@ import com.github.javaparser.ast.stmt.{
   SynchronizedStmt,
   ThrowStmt,
   TryStmt,
-  WhileStmt
+  WhileStmt,
+  YieldStmt
 }
 import com.github.javaparser.symbolsolver.javaparsermodel.contexts.SwitchEntryContext
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver
@@ -418,6 +419,15 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
     } else {
       Ast(returnNode)
     }
+  }
+
+  private[statements] def astForYieldStatement(yieldStmt: YieldStmt): Ast = {
+    val yieldNode = NewReturn()
+          .lineNumber(line(yieldStmt))
+          .columnNumber(column(yieldStmt))
+          .code(code(yieldStmt))
+    val exprAsts = astsForExpression(yieldStmt.getExpression, ExpectedType.empty)
+    returnAst(yieldNode, exprAsts)
   }
 
   private[statements] def astsForLabeledStatement(stmt: LabeledStmt): Seq[Ast] = {
