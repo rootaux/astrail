@@ -49,8 +49,10 @@ object MavenDependencies {
   }
 
   private[dependency] def get(projectDir: Path): Option[collection.Seq[String]] = {
+    val mvnJava = System.getenv("MVN_JAVA_PATH")
+    val extraEnvVars = if (mvnJava != null) Map("JAVA_HOME" -> mvnJava) else Map.empty
     val lines = ExternalCommand
-      .run(command = fetchCommandWithOpts, workingDir = Option(projectDir), isShellCommand = isWin)
+      .run(command = fetchCommandWithOpts, workingDir = Option(projectDir), isShellCommand = isWin, extraEnv = extraEnvVars)
       .logIfFailed()
       .toTry match {
       case Success(lines) =>
