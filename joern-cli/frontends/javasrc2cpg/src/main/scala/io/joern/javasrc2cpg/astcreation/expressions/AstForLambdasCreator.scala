@@ -337,7 +337,10 @@ private[expressions] trait AstForLambdasCreator { this: AstCreator =>
           // TODO the name is statically imported and needs to be handled properly.
           Nil
         case variable: Scope.FoundVariable if variable.getVariable().get.isInstanceOf[ScopeMember] =>
-          if (thisCaptureHandled) {
+          val member = variable.getVariable().get.asInstanceOf[ScopeMember]
+          if(member.isStatic){
+            Nil
+          } else if (thisCaptureHandled) {
             // Already added local and closure binding for captured `this`, so don't add it again
             Nil
           } else {
