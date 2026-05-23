@@ -25,6 +25,38 @@ package object language {
   implicit def toDdgNodeDotSingle(method: Method): DdgNodeDot =
     new DdgNodeDot(Iterator.single(method))
 
+  implicit def toCallGraphReachability(traversal: IterableOnce[Call]): CallGraphReachabilityExt =
+    new CallGraphReachabilityExt(traversal.iterator)
+
+  implicit def toMethodCallGraphReachability(traversal: IterableOnce[Method]): MethodCallGraphReachabilityExt =
+    new MethodCallGraphReachabilityExt(traversal.iterator)
+
+  /** Extension methods for call-graph-level reachability on [[Call]] traversals (method-to-call). */
+  class CallGraphReachabilityExt(val traversal: Iterator[Call]) extends AnyVal {
+
+    /** Returns the sink calls that are reachable from at least one of the given source methods via the call graph.
+      * This is a lightweight BFS over outgoing calls — no taint tracking.
+      */
+    def reachableByCallGraph(sourceTrav: IterableOnce[Method], maxDepth: Int = -1): List[Call] =
+      CallGraphReachability.reachableSinks(sourceTrav.iterator.toList, traversal.toList, maxDepth)
+
+    /** Like [[reachableByCallGraph]] but also returns the method-level call chain for each reached sink. */
+    def reachableByCallGraphWithChain(sourceTrav: IterableOnce[Method], maxDepth: Int = -1): List[(List[Method], Call)] =
+      CallGraphReachability.reachableSinksWithCallChain(sourceTrav.iterator.toList, traversal.toList, maxDepth)
+  }
+
+  /** Extension methods for call-graph-level reachability on [[Method]] traversals (method-to-method). */
+  class MethodCallGraphReachabilityExt(val traversal: Iterator[Method]) extends AnyVal {
+
+    /** Returns the sink methods that are reachable from at least one of the given source methods via the call graph. */
+    def reachableByCallGraph(sourceTrav: IterableOnce[Method], maxDepth: Int = -1): List[Method] =
+      CallGraphReachability.reachableMethods(sourceTrav.iterator.toList, traversal.toList, maxDepth)
+
+    /** Like [[reachableByCallGraph]] but also returns the method-level call chain from source to sink. */
+    def reachableByCallGraphWithChain(sourceTrav: IterableOnce[Method], maxDepth: Int = -1): List[List[Method]] =
+      CallGraphReachability.reachableMethodsWithCallChain(sourceTrav.iterator.toList, traversal.toList, maxDepth)
+  }
+
   implicit def toExtendedPathsTrav[NodeType <: Path](traversal: IterableOnce[NodeType]): PassesExt =
     new PassesExt(traversal.iterator)
 

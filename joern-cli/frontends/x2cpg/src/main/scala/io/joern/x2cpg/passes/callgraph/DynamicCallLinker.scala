@@ -174,11 +174,7 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     // This call linker requires a method full name entry
     if (call.methodFullName.equals("<empty>") || call.methodFullName.equals(DynamicCallUnknownFullName)) return
 
-    // Fallback path for javasrc2cpg calls with an unresolved generic signature, e.g.
-    // `CachingRuleEvalStrategy.evaluateRule:<unresolvedSignature>(2)` — the frontend couldn't pin down the type
-    // parameter at the call site, so the exact-signature match below finds nothing (or worse: matches only the
-    // phantom stub that shares the unresolved fullname). We instead walk the subclass hierarchy and match by
-    // simple name + arity, which is exactly what the callee dispatch would do at runtime.
+    // Fallback path for javasrc2cpg calls with an unresolved generic signature
     if (linkUnresolvedSignatureCall(call, dstGraph)) return
 
     // Support for overriding
