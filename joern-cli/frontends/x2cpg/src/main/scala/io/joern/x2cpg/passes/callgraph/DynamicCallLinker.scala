@@ -204,8 +204,10 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
   }
 
   /** If `call` has an `<unresolvedSignature>(N)` signature, resolve it by name+arity across the declaring type's
-    * subclass hierarchy and add CALL edges to every concrete implementation. Returns true if this path handled
-    * the call (success or known unresolvable), false if the caller should fall through to the normal path.
+    * subclass hierarchy and add CALL edges to every concrete implementation. When the declaring type is also
+    * unresolved (`<unresolvedNamespace>`), falls back to searching all types in the CPG for methods matching
+    * by name and arity. Returns true if this path handled the call (success or known unresolvable), false if
+    * the caller should fall through to the normal path.
     */
   private def linkUnresolvedSignatureCall(call: Call, dstGraph: DiffGraphBuilder): Boolean = {
     val sig = call.signature
@@ -225,12 +227,22 @@ class DynamicCallLinker(cpg: Cpg) extends CpgPass(cpg) {
     // signature convention. We reuse `call.argument.size` as the source of truth for the caller-visible arity.
     val argArity = call.argument.size
 
-    val candidateTypes = allSubclasses(declaringType).clone().addOne(declaringType)
-    val candidates = candidateTypes.toList.flatMap { t =>
-      typeMap.get(t).toList.flatMap { td =>
+    val candidates = if (declaringType == "<unresolvedNamespace>") {
+      // When the declaring type is unresolved (e.g., return value of a generic method like Map.get()),
+      // search ALL types for methods matching by name and arity.
+      typeMap.values.toList.flatMap { td =>
         td._methodViaAstOut.filter { m =>
           m.name == methodName && (m.parameter.count(_.name != "this") == argArity || m.parameter.size == argArity)
         }.toList
+      }
+    } else {
+      val candidateTypes = allSubclasses(declaringType).clone().addOne(declaringType)
+      candidateTypes.toList.flatMap { t =>
+        typeMap.get(t).toList.flatMap { td =>
+          td._methodViaAstOut.filter { m =>
+            m.name == methodName && (m.parameter.count(_.name != "this") == argArity || m.parameter.size == argArity)
+          }.toList
+        }
       }
     }
 
