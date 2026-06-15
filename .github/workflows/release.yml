@@ -1,0 +1,111 @@
+name: Astrail Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseType:
+        description: What kind of release is this?
+        required: true
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: astrail-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: sbt
+
+      - name: Set up sbt
+        uses: sbt/setup-sbt@af116cce31c00823d3903ce687f9cda3a4f19f1b # v1.2.1
+
+      - name: Compute next release version
+        id: version
+        env:
+          RELEASE_TYPE: ${{ inputs.releaseType }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current="$(grep -E 'ThisBuild / version' build.sbt | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "Current version: $current"
+          IFS='.' read -r major minor patch <<< "$current"
+
+          case "$RELEASE_TYPE" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+            *) echo "Unsupported release type: $RELEASE_TYPE" >&2; exit 1 ;;
+          esac
+
+          new_version="${major}.${minor}.${patch}"
+          tag="v${new_version}"
+          echo "New version: $new_version (tag $tag)"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists - aborting." >&2
+            exit 1
+          fi
+
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in build.sbt
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i -E "s/(ThisBuild \/ version[[:space:]]*:=[[:space:]]*)\"[^\"]+\"/\1\"${NEW_VERSION}\"/" build.sbt
+          grep -E 'ThisBuild / version' build.sbt
+
+      - name: Build distribution
+        run: sbt createDistribution
+
+      - name: Commit, push, and tag the release
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add build.sbt
+          git commit -m "bump version to ${NEW_VERSION}"
+          git push origin HEAD:main
+
+          git tag -a "$TAG" -m "Release ${NEW_VERSION}"
+          git push origin "$TAG"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@69320dbe05506a9a39fc8ae11030b214ec2d1f87
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          make_latest: true
+          files: target/astrail-cli.zip
