@@ -1,6 +1,6 @@
 name                     := "astrail"
 ThisBuild / organization := "io.astrail"
-ThisBuild / version      := "0.0.3"
+ThisBuild / version      := "0.0.4"
 ThisBuild / scalaVersion := "3.7.4"
 
 val cpgVersion = "1.7.62"
