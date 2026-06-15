@@ -12,7 +12,7 @@ object DefaultSemantics {
     *   a default set of common external procedure calls for all languages.
     */
   def apply(): FullNameSemantics = {
-    val list = operatorFlows ++ cFlows ++ javaCollectionFlows ++ javaFlows
+    val list = operatorFlows ++ cFlows ++ javaCollectionFlows ++ javaStringFlows ++ servletFlows ++ javaFlows
     FullNameSemantics.fromList(list)
   }
 
@@ -254,6 +254,8 @@ object DefaultSemantics {
 
     // -- StringBuilder / StringBuffer --
     val stringBuilderFlows = List(
+      FlowSemantic("java.lang.StringBuilder\\.<init>:.*", List(FlowMapping(1, -1)), regex = true),
+      FlowSemantic("java.lang.StringBuffer\\.<init>:.*", List(FlowMapping(1, -1)), regex = true),
       FlowSemantic("java.lang.StringBuilder\\.append:.*", List(FlowMapping(1, 0), FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.lang.StringBuffer\\.append:.*", List(FlowMapping(1, 0), FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.lang.StringBuilder\\.insert:.*", List(FlowMapping(2, 0), FlowMapping(0, -1)), regex = true),
@@ -265,10 +267,64 @@ object DefaultSemantics {
     mapFlows ++ listFlows ++ queueFlows ++ setFlows ++ iteratorFlows ++ streamFlows ++ optionalFlows ++ stringBuilderFlows
   }
 
+  /** Semantic summaries for common `java.lang.String` and other JDK utility calls*/
+  def javaStringFlows: List[FlowSemantic] = {
+    // -- String (instance methods): receiver and/or argument -> return --
+    val stringInstanceFlows = List(
+      FlowSemantic("java.lang.String\\.substring:.*", List(FlowMapping(0, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.concat:.*", List(FlowMapping(0, -1), FlowMapping(1, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.replace:.*", List(FlowMapping(0, -1), FlowMapping(2, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.replaceAll:.*", List(FlowMapping(0, -1), FlowMapping(2, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.replaceFirst:.*", List(FlowMapping(0, -1), FlowMapping(2, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.trim:.*", List(FlowMapping(0, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.strip:.*", List(FlowMapping(0, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.toLowerCase:.*", List(FlowMapping(0, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.toUpperCase:.*", List(FlowMapping(0, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.getBytes:.*", List(FlowMapping(0, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.toCharArray:.*", List(FlowMapping(0, -1)), regex = true),
+      // receiver -> element array, receiver -> return, and args pass through (covers both split overloads)
+      FlowSemantic(
+        "java.lang.String\\.split:.*",
+        List(FlowMapping(0, 0), FlowMapping(0, -1), PassThroughMapping),
+        regex = true
+      )
+    )
+
+    // -- String (static methods): real args start at index 1 (no receiver) --
+    val stringStaticFlows = List(
+      FlowSemantic("java.lang.String\\.format:.*", List(FlowMapping(1, -1), FlowMapping(2, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.valueOf:.*", List(FlowMapping(1, -1)), regex = true),
+      FlowSemantic("java.lang.String\\.join:.*", List(FlowMapping(1, -1), FlowMapping(2, -1)), regex = true)
+    )
+
+    // -- Misc JDK utilities --
+    val miscFlows = List(
+      FlowSemantic("java.net.URLDecoder\\.decode:.*", List(FlowMapping(1, -1)), regex = true),
+      FlowSemantic("java.io.BufferedReader\\.readLine:.*", List(FlowMapping(0, -1)), regex = true),
+      // deliberately broad: high recall, may over-propagate
+      FlowSemantic("java.lang.Object\\.toString:.*", List(FlowMapping(0, -1)), regex = true)
+    )
+
+    stringInstanceFlows ++ stringStaticFlows ++ miscFlows
+  }
+
+  /** Semantic summaries for the Servlet APIs. */
+  def servletFlows: List[FlowSemantic] = List(
+    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getParameterMap:.*", List(FlowMapping(0, -1)), regex = true),
+    FlowSemantic(
+      "javax.servlet.http.HttpServletRequest\\.getParameterValues:.*",
+      List(FlowMapping(0, -1)),
+      regex = true
+    ),
+    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getQueryString:.*", List(FlowMapping(0, -1)), regex = true),
+    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getCookies:.*", List(FlowMapping(0, -1)), regex = true),
+    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getInputStream:.*", List(FlowMapping(0, -1)), regex = true),
+    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getReader:.*", List(FlowMapping(0, -1)), regex = true),
+    FlowSemantic("javax.servlet.http.Cookie\\.getValue:.*", List(FlowMapping(0, -1)), regex = true)
+  )
+
   /** Semantic summaries for common external Java calls. */
   def javaFlows: List[FlowSemantic] = List(
-    PTF("java.lang.String.split:java.lang.String[](java.lang.String)", List((0, 0))),
-    PTF("java.lang.String.split:java.lang.String[](java.lang.String,int)", List((0, 0))),
     PTF("java.lang.String.compareTo:int(java.lang.String)", List((0, 0))),
     F("java.io.PrintWriter.print:void(java.lang.String)", List((0, 0), (1, 1))),
     F("java.io.PrintWriter.println:void(java.lang.String)", List((0, 0), (1, 1))),
@@ -299,6 +355,7 @@ object DefaultSemantics {
     *   procedure semantics for operators and common external Java calls only.
     */
   @unused
-  def javaSemantics(): FullNameSemantics = FullNameSemantics.fromList(operatorFlows ++ javaCollectionFlows ++ javaFlows)
+  def javaSemantics(): FullNameSemantics =
+    FullNameSemantics.fromList(operatorFlows ++ javaCollectionFlows ++ javaStringFlows ++ servletFlows ++ javaFlows)
 
 }
