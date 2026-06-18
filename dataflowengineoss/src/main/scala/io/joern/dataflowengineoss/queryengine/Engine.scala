@@ -241,10 +241,21 @@ object Engine {
     }
   }
 
+  /** A call whose own target frontend could not resolve (`<unresolvedNamespace>` / `<unresolvedSignature>`).
+    *
+    * Such a call may still carry speculative CALL edges — e.g. the name+arity links `DynamicCallLinker` adds across
+    * all same-named methods so that call-graph reachability works — but those targets are not a sound resolution. For
+    * data flow it must therefore be treated as an unknown/external call rather
+    * than expanded into one of those bodies.
+    */
+  def isUnresolvedCall(call: Call): Boolean =
+    Option(call.methodFullName).exists(_.contains("<unresolvedNamespace>")) ||
+      Option(call.signature).exists(_.contains("<unresolvedSignature>"))
+
   def isOutputArgOfInternalMethod(arg: Expression)(implicit semantics: Semantics): Boolean = {
     arg.inCall.l match {
       case List(call) =>
-        methodsForCall(call).internal.isNotStub.nonEmpty && semanticsForCall(call).isEmpty
+        !isUnresolvedCall(call) && methodsForCall(call).internal.isNotStub.nonEmpty && semanticsForCall(call).isEmpty
       case _ =>
         false
     }
@@ -294,7 +305,7 @@ object Engine {
     methodsForCall(call).internal.nonEmpty
   }
   def isCallToInternalMethodWithoutSemantic(call: Call)(implicit semantics: Semantics): Boolean = {
-    isCallToInternalMethod(call) && semanticsForCall(call).isEmpty
+    !isUnresolvedCall(call) && isCallToInternalMethod(call) && semanticsForCall(call).isEmpty
   }
 
   def semanticsForCall(call: Call)(implicit semantics: Semantics): List[FlowSemantic] = {
