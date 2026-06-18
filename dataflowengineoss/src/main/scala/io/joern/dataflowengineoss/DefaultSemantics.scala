@@ -1,6 +1,6 @@
 package io.joern.dataflowengineoss
 
-import io.joern.dataflowengineoss.semanticsloader.{FlowSemantic, FullNameSemantics}
+import io.joern.dataflowengineoss.semanticsloader.{FlowPath, FlowSemantic, FullNameSemantics}
 import io.joern.dataflowengineoss.semanticsloader.FlowPath.{FlowMapping, PassThroughMapping}
 import io.shiftleft.codepropertygraph.generated.Operators
 
@@ -254,8 +254,10 @@ object DefaultSemantics {
 
     // -- StringBuilder / StringBuffer --
     val stringBuilderFlows = List(
-      FlowSemantic("java.lang.StringBuilder\\.<init>:.*", List(FlowMapping(1, -1)), regex = true),
-      FlowSemantic("java.lang.StringBuffer\\.<init>:.*", List(FlowMapping(1, -1)), regex = true),
+      // seed string -> the constructed builder (the receiver, index 0, per `append` above); PassThrough keeps
+      // any other ctor args flowing too, so this is never less than the engine's permissive default.
+      FlowSemantic("java.lang.StringBuilder\\.<init>:.*", List(FlowMapping(1, 0), PassThroughMapping), regex = true),
+      FlowSemantic("java.lang.StringBuffer\\.<init>:.*", List(FlowMapping(1, 0), PassThroughMapping), regex = true),
       FlowSemantic("java.lang.StringBuilder\\.append:.*", List(FlowMapping(1, 0), FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.lang.StringBuffer\\.append:.*", List(FlowMapping(1, 0), FlowMapping(0, -1)), regex = true),
       FlowSemantic("java.lang.StringBuilder\\.insert:.*", List(FlowMapping(2, 0), FlowMapping(0, -1)), regex = true),
@@ -267,61 +269,66 @@ object DefaultSemantics {
     mapFlows ++ listFlows ++ queueFlows ++ setFlows ++ iteratorFlows ++ streamFlows ++ optionalFlows ++ stringBuilderFlows
   }
 
-  /** Semantic summaries for common `java.lang.String` and other JDK utility calls*/
+  /** Semantic summaries for common `java.lang.String` and other JDK utility calls.
+    *
+    * These are passthrough-complete: every propagator maps receiver -> return AND (via `PassThroughMapping`) all
+    * arguments -> return.
+    */
   def javaStringFlows: List[FlowSemantic] = {
-    // -- String (instance methods): receiver and/or argument -> return --
+    // -- String (instance methods): receiver + all args -> return --
+    def instance(method: String, extra: List[FlowPath] = Nil): FlowSemantic =
+      FlowSemantic(s"java.lang.String\\.$method:.*", FlowMapping(0, -1) :: PassThroughMapping :: extra, regex = true)
+
     val stringInstanceFlows = List(
-      FlowSemantic("java.lang.String\\.substring:.*", List(FlowMapping(0, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.concat:.*", List(FlowMapping(0, -1), FlowMapping(1, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.replace:.*", List(FlowMapping(0, -1), FlowMapping(2, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.replaceAll:.*", List(FlowMapping(0, -1), FlowMapping(2, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.replaceFirst:.*", List(FlowMapping(0, -1), FlowMapping(2, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.trim:.*", List(FlowMapping(0, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.strip:.*", List(FlowMapping(0, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.toLowerCase:.*", List(FlowMapping(0, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.toUpperCase:.*", List(FlowMapping(0, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.getBytes:.*", List(FlowMapping(0, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.toCharArray:.*", List(FlowMapping(0, -1)), regex = true),
-      // receiver -> element array, receiver -> return, and args pass through (covers both split overloads)
-      FlowSemantic(
-        "java.lang.String\\.split:.*",
-        List(FlowMapping(0, 0), FlowMapping(0, -1), PassThroughMapping),
-        regex = true
-      )
+      instance("substring"),
+      instance("concat"),
+      instance("replace"),
+      instance("replaceAll"),
+      instance("replaceFirst"),
+      instance("trim"),
+      instance("strip"),
+      instance("toLowerCase"),
+      instance("toUpperCase"),
+      instance("getBytes"),
+      instance("toCharArray"),
+      // also receiver -> receiver (0,0), since split's element array aliases the receiver in some lowerings
+      instance("split", extra = List(FlowMapping(0, 0)))
     )
 
-    // -- String (static methods): real args start at index 1 (no receiver) --
+    // -- String (static methods): no receiver, so PassThrough (all args -> return) is already complete --
     val stringStaticFlows = List(
-      FlowSemantic("java.lang.String\\.format:.*", List(FlowMapping(1, -1), FlowMapping(2, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.valueOf:.*", List(FlowMapping(1, -1)), regex = true),
-      FlowSemantic("java.lang.String\\.join:.*", List(FlowMapping(1, -1), FlowMapping(2, -1)), regex = true)
+      FlowSemantic("java.lang.String\\.format:.*", List(PassThroughMapping), regex = true),
+      FlowSemantic("java.lang.String\\.valueOf:.*", List(PassThroughMapping), regex = true),
+      FlowSemantic("java.lang.String\\.join:.*", List(PassThroughMapping), regex = true)
     )
 
     // -- Misc JDK utilities --
     val miscFlows = List(
-      FlowSemantic("java.net.URLDecoder\\.decode:.*", List(FlowMapping(1, -1)), regex = true),
-      FlowSemantic("java.io.BufferedReader\\.readLine:.*", List(FlowMapping(0, -1)), regex = true),
+      // static: all args (decoded value + charset) -> return
+      FlowSemantic("java.net.URLDecoder\\.decode:.*", List(PassThroughMapping), regex = true),
+      FlowSemantic("java.io.BufferedReader\\.readLine:.*", List(FlowMapping(0, -1), PassThroughMapping), regex = true),
       // deliberately broad: high recall, may over-propagate
-      FlowSemantic("java.lang.Object\\.toString:.*", List(FlowMapping(0, -1)), regex = true)
+      FlowSemantic("java.lang.Object\\.toString:.*", List(FlowMapping(0, -1), PassThroughMapping), regex = true)
     )
 
     stringInstanceFlows ++ stringStaticFlows ++ miscFlows
   }
 
-  /** Semantic summaries for the Servlet APIs. */
-  def servletFlows: List[FlowSemantic] = List(
-    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getParameterMap:.*", List(FlowMapping(0, -1)), regex = true),
-    FlowSemantic(
-      "javax.servlet.http.HttpServletRequest\\.getParameterValues:.*",
-      List(FlowMapping(0, -1)),
-      regex = true
-    ),
-    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getQueryString:.*", List(FlowMapping(0, -1)), regex = true),
-    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getCookies:.*", List(FlowMapping(0, -1)), regex = true),
-    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getInputStream:.*", List(FlowMapping(0, -1)), regex = true),
-    FlowSemantic("javax.servlet.http.HttpServletRequest\\.getReader:.*", List(FlowMapping(0, -1)), regex = true),
-    FlowSemantic("javax.servlet.http.Cookie\\.getValue:.*", List(FlowMapping(0, -1)), regex = true)
-  )
+  /** Semantic summaries for the Servlet APIs. Passthrough-complete (receiver + all args -> return).*/
+  def servletFlows: List[FlowSemantic] = {
+    def servlet(fullNamePattern: String): FlowSemantic =
+      FlowSemantic(fullNamePattern, List(FlowMapping(0, -1), PassThroughMapping), regex = true)
+
+    List(
+      servlet("javax.servlet.http.HttpServletRequest\\.getParameterMap:.*"),
+      servlet("javax.servlet.http.HttpServletRequest\\.getParameterValues:.*"),
+      servlet("javax.servlet.http.HttpServletRequest\\.getQueryString:.*"),
+      servlet("javax.servlet.http.HttpServletRequest\\.getCookies:.*"),
+      servlet("javax.servlet.http.HttpServletRequest\\.getInputStream:.*"),
+      servlet("javax.servlet.http.HttpServletRequest\\.getReader:.*"),
+      servlet("javax.servlet.http.Cookie\\.getValue:.*")
+    )
+  }
 
   /** Semantic summaries for common external Java calls. */
   def javaFlows: List[FlowSemantic] = List(
