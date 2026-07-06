@@ -300,4 +300,30 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "Spring FactoryBean produces its bean via getObject()" should {
+    lazy val cpg = code("""
+        |import org.springframework.stereotype.Component;
+        |import org.springframework.beans.factory.FactoryBean;
+        |import org.springframework.beans.factory.annotation.Autowired;
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |@Component class GreeterFactory implements FactoryBean<Greeter> {
+        |  public Greeter getObject() { return new RealGreeter(); }
+        |  public Class<?> getObjectType() { return Greeter.class; }
+        |}
+        |class App {
+        |  @Autowired Greeter g;
+        |  void run() { g.greet(); }
+        |}
+        |class Main { void go() { new App().run(); } }
+        |""".stripMargin)
+
+    "bind the bean type to the concrete type getObject() returns" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }
