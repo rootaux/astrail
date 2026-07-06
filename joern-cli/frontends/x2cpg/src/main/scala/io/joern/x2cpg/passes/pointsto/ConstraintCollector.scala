@@ -168,6 +168,13 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
           (baseVar, fldName) <- fieldAccessParts(methodFullName, call)
         } emit(methodFullName, Constraint.Load(dst, baseVar, fldName))
 
+      case call: Call if call.name == Operators.cast =>
+        // `lhs = (T) operand` — a cast preserves points-to, so copy from the cast operand into lhs.
+        for {
+          v      <- lhsVar
+          srcVar <- exprVar(methodFullName, call)
+        } emit(methodFullName, Constraint.Copy(v, srcVar))
+
       case call: Call if !isOperator(call.name) =>
         lhsVar.foreach { v =>
           emit(methodFullName, Constraint.Copy(v, PointerVar.callResult(call.id())))
@@ -264,6 +271,10 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       Some(PointerVar.local(methodFullName, p.name))
     case call: Call if call.name == Operators.fieldAccess || call.name == Operators.indirectFieldAccess =>
       fieldAccessParts(methodFullName, call).map { case (_, fld) => fieldSlotFromAccess(call, fld) }
+    case call: Call if call.name == Operators.cast =>
+      // A cast is identity for points-to: `(Foo) bar` holds the same object as `bar`. The operand is the last
+      // argument (the target type is a TypeRef in argument position 1), so map the cast to the operand.
+      call.argument.l.lastOption.flatMap(exprVar(methodFullName, _))
     case call: Call if !isOperator(call.name) =>
       Some(PointerVar.callResult(call.id()))
     case block: Block =>

@@ -58,4 +58,26 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "allocation flowing through a cast" should {
+    lazy val cpg = code("""
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class App {
+        |  static Object make() { return new RealGreeter(); }
+        |  void run() {
+        |    Object o = make();
+        |    Greeter g = (Greeter) o;
+        |    g.greet();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "preserve points-to across the cast and resolve the dispatch" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }
