@@ -230,17 +230,18 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
         val receiverVar = call.receiver.headOption.flatMap(exprVar(methodFullName, _))
         receiverVar match {
           case Some(recv) =>
-            emit(
-              methodFullName,
-              Constraint.VirtualCall(
-                callNodeId    = call.id(),
-                receiver      = recv,
-                methodName    = call.name,
-                signature     = Option(call.signature).getOrElse(""),
-                argVars       = argVars,
-                callResultVar = resultVar
+            if (!emitCollectionAccess(methodFullName, call, recv, resultVar))
+              emit(
+                methodFullName,
+                Constraint.VirtualCall(
+                  callNodeId    = call.id(),
+                  receiver      = recv,
+                  methodName    = call.name,
+                  signature     = Option(call.signature).getOrElse(""),
+                  argVars       = argVars,
+                  callResultVar = resultVar
+                )
               )
-            )
           case None =>
             emitStaticCall(methodFullName, call, argVars, resultVar)
         }
@@ -268,6 +269,29 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
         callResultVar  = resultVar
       )
     )
+  }
+
+  /** Model a JDK collection/map access as a store into, or load from, the receiver's synthetic element slot.
+    * Returns true if the call was recognised and handled (so no virtual call is emitted for it). The JDK has no
+    * method bodies in the CPG, so these calls would otherwise resolve to nothing.
+    */
+  private def emitCollectionAccess(methodFullName: String, call: Call, recv: String, resultVar: String): Boolean = {
+    val recvType = call.receiver.headOption.map(typeFullNameOf).getOrElse("")
+    if (!isCollectionType(recvType)) false
+    else if (CollectionStoreMethods.contains(call.name)) {
+      // The stored element is the last reference argument (the value for put(key, value)); the receiver is
+      // argumentIndex 0 and is excluded.
+      call.argument.l
+        .filter(_.argumentIndex > 0)
+        .reverse
+        .flatMap(exprVar(methodFullName, _))
+        .headOption
+        .foreach(argVar => emit(methodFullName, Constraint.Store(recv, CollElem, argVar)))
+      true
+    } else if (CollectionLoadMethods.contains(call.name)) {
+      emit(methodFullName, Constraint.Load(resultVar, recv, CollElem))
+      true
+    } else false
   }
 
   // -------------------------------------------------------------------------
@@ -352,6 +376,29 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     * slot, so `a[i] = x; y = a[j]` makes `y` point to `x`.
     */
   private val ArrayElem = "[]"
+
+  /** Synthetic field name for the contents of a JDK collection/map, modelled element-insensitively (one slot). */
+  private val CollElem = "<collElem>"
+
+  /** Collection mutators that insert a reference into the container (the last reference argument is the element;
+    * for `put(key, value)` this is the value). */
+  private val CollectionStoreMethods =
+    Set("add", "offer", "push", "put", "set", "addFirst", "addLast", "offerFirst", "offerLast", "addElement")
+
+  /** Collection accessors that return an element from the container. */
+  private val CollectionLoadMethods =
+    Set("get", "poll", "peek", "remove", "pop", "element", "getFirst", "getLast", "peekFirst", "peekLast",
+      "pollFirst", "pollLast")
+
+  /** Conservative, name-based check for a JDK collection/map receiver (the JDK is not in the CPG, so the type
+    * hierarchy is unavailable). Matches java.util.* or a simple name of a core collection interface. */
+  private def isCollectionType(typeFullName: String): Boolean = {
+    if (typeFullName == null || typeFullName.isEmpty) return false
+    typeFullName.startsWith("java.util.") || {
+      val simple = typeFullName.substring(typeFullName.lastIndexOf('.') + 1)
+      Set("List", "Map", "Set", "Collection", "Queue", "Deque", "Iterable").contains(simple)
+    }
+  }
 
   private def isOperator(name: String): Boolean = name != null && name.startsWith("<operator>")
 

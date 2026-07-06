@@ -102,4 +102,28 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "allocation added to and read from a collection" should {
+    lazy val cpg = code("""
+        |import java.util.ArrayList;
+        |import java.util.List;
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class App {
+        |  void run() {
+        |    List<Greeter> gs = new ArrayList<Greeter>();
+        |    gs.add(new RealGreeter());
+        |    Greeter g = gs.get(0);
+        |    g.greet();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "flow the element through the collection's synthetic slot and resolve the dispatch" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }
