@@ -45,7 +45,14 @@ final class PointsToSet private (private val _bits: mutable.BitSet) {
 }
 
 object PointsToSet {
-  def empty: PointsToSet                   = new PointsToSet(mutable.BitSet.empty)
+  def empty: PointsToSet = new PointsToSet(mutable.BitSet.empty)
+
+  /** Shared read-only empty set for `getOrElse` read-miss paths, so a missing variable does not allocate a fresh
+    * throwaway `BitSet` on every lookup. MUST NOT be mutated — only pass it as a `getOrElse` default, never to
+    * `getOrElseUpdate` or any mutating call.
+    */
+  val EMPTY: PointsToSet = empty
+
   def single(i: Int): PointsToSet          = { val s = empty; s.add(i); s }
   def from(xs: Iterable[Int]): PointsToSet = { val s = empty; xs.foreach(s.add); s }
 }

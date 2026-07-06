@@ -183,7 +183,7 @@ final class AndersenSolver(
       worklistIterations += 1
       val v   = find(worklist.dequeue())
       onWorklist.remove(v)
-      val set = pt.getOrElse(v, PointsToSet.empty)
+      val set = pt.getOrElse(v, PointsToSet.EMPTY)
       if (set.nonEmpty) {
         // Difference propagation: push only the indices of pt(v) not yet propagated out of v along its
         // subset edges (recorded in `propagated(v)`), instead of re-unioning the whole set every fire.
@@ -303,14 +303,14 @@ final class AndersenSolver(
       val bk  = k(ctx, base)
       val dk  = k(ctx, dst)
       loadsByBase.getOrElseUpdate(bk, mutable.ArrayBuffer.empty).append((dk, fld))
-      val baseSet = pt.getOrElse(bk, PointsToSet.empty)
+      val baseSet = pt.getOrElse(bk, PointsToSet.EMPTY)
       if (baseSet.nonEmpty) dischargeLoad(dk, bk, fld)
 
     case Store(base, fld, src) =>
       val bk = k(ctx, base)
       val sk = k(ctx, src)
       storesByBase.getOrElseUpdate(bk, mutable.ArrayBuffer.empty).append((fld, sk))
-      val baseSet = pt.getOrElse(bk, PointsToSet.empty)
+      val baseSet = pt.getOrElse(bk, PointsToSet.EMPTY)
       if (baseSet.nonEmpty) dischargeStore(bk, fld, sk)
 
     case vc: VirtualCall =>
@@ -326,7 +326,7 @@ final class AndersenSolver(
         seen           = mutable.BitSet.empty
       )
       vcallsByReceiver.getOrElseUpdate(rk, mutable.ArrayBuffer.empty).append(inst)
-      val rset = pt.getOrElse(rk, PointsToSet.empty)
+      val rset = pt.getOrElse(rk, PointsToSet.EMPTY)
       if (rset.nonEmpty) dischargeVirtualCall(inst)
 
     case sc: StaticCall =>
@@ -383,7 +383,7 @@ final class AndersenSolver(
     if (srcK == dstK) return
     val outs = subsetOut.getOrElseUpdate(srcK, mutable.HashSet.empty)
     if (outs.add(dstK)) {
-      val srcSet = pt.getOrElse(srcK, PointsToSet.empty)
+      val srcSet = pt.getOrElse(srcK, PointsToSet.EMPTY)
       if (srcSet.nonEmpty) {
         val dstSet = pt.getOrElseUpdate(dstK, PointsToSet.empty)
         if (dstSet.unionInPlace(srcSet)) enqueue(dstK)
@@ -393,14 +393,14 @@ final class AndersenSolver(
 
   /** Wire per-type field slots for every type in `pt(baseK)` into `dstK`. */
   private def dischargeLoad(dstK: Int, baseK: Int, fld: String): Unit = {
-    val baseSet = pt.getOrElse(find(baseK), PointsToSet.empty)
+    val baseSet = pt.getOrElse(find(baseK), PointsToSet.EMPTY)
     allocTable.typesOf(baseSet).foreach { t =>
       addSubsetEdge(k(DEFAULT_CTX, PointerVar.field(t, fld)), dstK)
     }
   }
 
   private def dischargeStore(baseK: Int, fld: String, srcK: Int): Unit = {
-    val baseSet = pt.getOrElse(find(baseK), PointsToSet.empty)
+    val baseSet = pt.getOrElse(find(baseK), PointsToSet.EMPTY)
     allocTable.typesOf(baseSet).foreach { t =>
       addSubsetEdge(srcK, k(DEFAULT_CTX, PointerVar.field(t, fld)))
     }
@@ -408,7 +408,7 @@ final class AndersenSolver(
 
   /** Resolve and instantiate callees for new allocation sites in the receiver's points-to set. */
   private def dischargeVirtualCall(inst: InstantiatedVirtualCall): Unit = {
-    val rset = pt.getOrElse(find(inst.receiverK), PointsToSet.empty)
+    val rset = pt.getOrElse(find(inst.receiverK), PointsToSet.EMPTY)
     // Process only receiver allocation sites not yet seen for this call site: `seen` is the delta bookkeeping,
     // so we never re-materialise the whole receiver set (rset.iterator.toArray) on a fire that adds nothing.
     val newAllocs = rset.diffBits(inst.seen)
