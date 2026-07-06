@@ -300,6 +300,10 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       case None =>
     }
 
+    // ServiceLoader.load(Foo.class): the result is a collection whose elements are the service interface's impls.
+    // META-INF/services is not in the CPG, so fall back to every impl of the interface (CHA).
+    if (emitServiceLoaderLoad(methodFullName, call, resultVar)) return
+
     // Key argument pointer variables by their Joern argumentIndex (receiver/this = 0, explicit args from 1),
     // which matches MethodParameterIn.index. Keeping the index survives the flatMap that drops primitive args,
     // so the solver can bind each argument to the correct parameter.
@@ -370,6 +374,11 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       true
     } else if (CollectionLoadMethods.contains(call.name)) {
       emit(methodFullName, Constraint.Load(resultVar, recv, CollElem))
+      true
+    } else if (CollectionPassthroughMethods.contains(call.name)) {
+      // iterator()/stream()/... carries the same elements: pass the container through so next()/get() on the
+      // result reads the same element slot.
+      emit(methodFullName, Constraint.Copy(resultVar, recv))
       true
     } else false
   }
@@ -529,7 +538,12 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
   /** Collection accessors that return an element from the container. */
   private val CollectionLoadMethods =
     Set("get", "poll", "peek", "remove", "pop", "element", "getFirst", "getLast", "peekFirst", "peekLast",
-      "pollFirst", "pollLast")
+      "pollFirst", "pollLast", "next")
+
+  /** Accessors that return a view carrying the same elements (an Iterator/Stream/Spliterator). Modelled as a
+    * pass-through of the container so a following next()/get() reads the same element slot. */
+  private val CollectionPassthroughMethods =
+    Set("iterator", "listIterator", "stream", "parallelStream", "spliterator")
 
   /** Conservative, name-based check for a JDK collection/map receiver (the JDK is not in the CPG, so the type
     * hierarchy is unavailable). Matches java.util.* or a simple name of a core collection interface. */
@@ -562,6 +576,50 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     case ctor: Call if ctor.name == "getDeclaredConstructor" || ctor.name == "getConstructor" =>
       ctor.receiver.headOption.flatMap(classNameFromReflectiveChain)
     case _ => None
+  }
+
+  /** Concrete implementations of a type, from the CPG's inheritance edges (CHA). */
+  private lazy val implsByInterface: Map[String, Set[String]] =
+    cpg.typeDecl.l
+      .flatMap(td => td.inheritsFromTypeFullName.map(_ -> td.fullName))
+      .groupBy(_._1)
+      .view
+      .mapValues(_.map(_._2).toSet)
+      .toMap
+
+  /** The type named by a `Foo.class` literal (or a Class-typed identifier). */
+  private def classLiteralType(node: AstNode): Option[String] = node match {
+    case tr: TypeRef => Option(tr.typeFullName).filter(_.nonEmpty)
+    case fa: Call if fa.name == Operators.fieldAccess =>
+      val isClassField = fa.argument.argumentIndex(2).headOption.exists {
+        case fi: FieldIdentifier => fi.canonicalName == "class"
+        case o: AstNode          => o.code == "class"
+      }
+      if (!isClassField) None
+      else
+        fa.argument.argumentIndex(1).headOption.flatMap {
+          case id: Identifier => Option(id.typeFullName).filter(t => t.nonEmpty && t != "ANY")
+          case tr: TypeRef    => Option(tr.typeFullName).filter(_.nonEmpty)
+          case _              => None
+        }
+    case _ => None
+  }
+
+  /** `ServiceLoader.load(Foo.class)` — model the result as a collection whose element slot holds every impl of the
+    * service interface (CHA). Returns true if handled. */
+  private def emitServiceLoaderLoad(methodFullName: String, call: Call, resultVar: String): Boolean = {
+    if (!Option(call.methodFullName).exists(_.startsWith("java.util.ServiceLoader.load"))) return false
+    call.argument.l.flatMap(classLiteralType).headOption match {
+      case Some(iface) =>
+        val loaderType = "java.util.ServiceLoader"
+        emit(methodFullName, Constraint.Alloc(resultVar, allocTable.intern(call.id(), loaderType)))
+        val elemSlot = PointerVar.field(loaderType, CollElem)
+        implsByInterface.getOrElse(iface, Set.empty).foreach { impl =>
+          emit(methodFullName, Constraint.Alloc(elemSlot, internSyntheticAlloc(impl)))
+        }
+        true
+      case None => false
+    }
   }
 
   private def isOperator(name: String): Boolean = name != null && name.startsWith("<operator>")

@@ -368,4 +368,25 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "ServiceLoader iterates the service interface's implementations" should {
+    lazy val cpg = code("""
+        |import java.util.ServiceLoader;
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class App {
+        |  void run() {
+        |    ServiceLoader<Greeter> loader = ServiceLoader.load(Greeter.class);
+        |    for (Greeter g : loader) { g.greet(); }
+        |  }
+        |}
+        |""".stripMargin)
+
+    "resolve a dispatch on an element to every impl of the loaded service" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe true
+    }
+  }
 }
