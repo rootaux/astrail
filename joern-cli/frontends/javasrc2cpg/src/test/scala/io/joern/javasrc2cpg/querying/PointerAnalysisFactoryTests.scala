@@ -161,4 +161,28 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.contains("helper")) shouldBe true
     }
   }
+
+  "field value read in value position through a polymorphic base" should {
+    lazy val cpg = code("""
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class Base { Greeter g; }
+        |class Derived extends Base { }
+        |class App {
+        |  static void consume(Greeter x) { x.greet(); }
+        |  void run() {
+        |    Base b = new Derived();
+        |    b.g = new RealGreeter();
+        |    consume(b.g);
+        |  }
+        |}
+        |""".stripMargin)
+
+    "read the field back through the concrete-type slot the write used, not the declared-type slot" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }

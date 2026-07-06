@@ -318,7 +318,18 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     case p: MethodParameterIn =>
       Some(PointerVar.local(methodFullName, p.name))
     case call: Call if call.name == Operators.fieldAccess || call.name == Operators.indirectFieldAccess =>
-      fieldAccessParts(methodFullName, call).map { case (_, fld) => fieldSlotFromAccess(call, fld) }
+      // Value-position field read: load through the base's concrete types (the same slot writes use), not the
+      // base's declared-type slot, so a value stored into F:<concreteType>:f is read back even when the base is
+      // polymorphic or its type is unknown.
+      fieldAccessParts(methodFullName, call).map { case (baseVar, fld) =>
+        val v = PointerVar.callResult(call.id())
+        emit(methodFullName, Constraint.Load(v, baseVar, fld))
+        v
+      }
+    case call: Call if isAllocation(call) =>
+      // A direct `new T(...)` in value position (e.g. a store RHS, which lowers to an <init>/alloc call rather
+      // than a block): model the allocation into a synthetic variable so it flows like any other reference.
+      Some(allocVar(methodFullName, call))
     case call: Call if call.name == Operators.cast =>
       // A cast is identity for points-to: `(Foo) bar` holds the same object as `bar`. The operand is the last
       // argument (the target type is a TypeRef in argument position 1), so map the cast to the operand.
@@ -344,6 +355,14 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     * lambda method's own full name (Joern sets MethodRef.typeFullName to it); the solver resolves any functional
     * dispatch on it (run/apply/get/accept/...) to that method. Returns the pointer variable holding it.
     */
+  /** Model a direct allocation call into a synthetic pointer variable and return it. */
+  private def allocVar(methodFullName: String, alloc: Call): String = {
+    val v   = PointerVar.callResult(alloc.id())
+    val idx = allocTable.intern(alloc.id(), allocType(alloc))
+    emit(methodFullName, Constraint.Alloc(v, idx))
+    v
+  }
+
   private def methodRefVar(methodFullName: String, mr: MethodRef): String = {
     val v = PointerVar.callResult(mr.id())
     // Use methodFullName: it is always the target/lambda method. (typeFullName equals it for lambdas but is the
@@ -380,11 +399,6 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       case other: AstNode      => other.code
     }
     fldName.map(n => PointerVar.field(baseType, n))
-  }
-
-  private def fieldSlotFromAccess(fa: Call, fldName: String): String = {
-    val baseType = fa.argument.headOption.map(typeFullNameOf).getOrElse("*")
-    PointerVar.field(baseType, fldName)
   }
 
   /** Extract `typeFullName` from a node, returning `"*"` if unavailable. */
