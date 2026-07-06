@@ -326,4 +326,25 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "reflective Class.forName(name).newInstance()" should {
+    lazy val cpg = code("""
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class App {
+        |  void run() throws Exception {
+        |    Object o = Class.forName("RealGreeter").newInstance();
+        |    Greeter g = (Greeter) o;
+        |    g.greet();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "allocate the named type and resolve a dispatch through the cast" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }

@@ -289,6 +289,17 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
 
   private def handleCall(methodFullName: String, call: Call): Unit = {
     val resultVar = PointerVar.callResult(call.id())
+
+    // Reflection: `Class.forName("Foo").newInstance()` produces a Foo; the JDK newInstance returns Object with no
+    // allocation, so model the result as an alloc of the named type. Handled before dispatch (the virtual call
+    // into java.lang.Class would resolve to nothing anyway).
+    reflectiveAllocType(call) match {
+      case Some(t) =>
+        emit(methodFullName, Constraint.Alloc(resultVar, allocTable.intern(call.id(), t)))
+        return
+      case None =>
+    }
+
     // Key argument pointer variables by their Joern argumentIndex (receiver/this = 0, explicit args from 1),
     // which matches MethodParameterIn.index. Keeping the index survives the flatMap that drops primitive args,
     // so the solver can bind each argument to the correct parameter.
@@ -538,6 +549,15 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
   private val GenericElementRe = """<L([^;<>]+);""".r
   private def collectionElementType(member: Member): Option[String] =
     Option(member.genericSignature).flatMap(GenericElementRe.findFirstMatchIn).map(_.group(1))
+
+  /** `Class.forName("Foo").newInstance()` — the named type, from the string literal passed to forName. */
+  private def reflectiveAllocType(call: Call): Option[String] =
+    if (call.name != "newInstance") None
+    else
+      call.receiver.headOption.collect {
+        case fn: Call if fn.name == "forName" =>
+          fn.argument.collectAll[Literal].headOption.map(_.code.stripPrefix("\"").stripSuffix("\""))
+      }.flatten
 
   private def isOperator(name: String): Boolean = name != null && name.startsWith("<operator>")
 
