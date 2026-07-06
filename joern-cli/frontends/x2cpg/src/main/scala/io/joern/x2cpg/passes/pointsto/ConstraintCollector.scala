@@ -550,14 +550,19 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
   private def collectionElementType(member: Member): Option[String] =
     Option(member.genericSignature).flatMap(GenericElementRe.findFirstMatchIn).map(_.group(1))
 
-  /** `Class.forName("Foo").newInstance()` — the named type, from the string literal passed to forName. */
+  /** Reflective instantiation `X.newInstance()` where X is a `Class.forName("Foo")` result, possibly via
+    * `getDeclaredConstructor()` / `getConstructor()` — returns the named type from the forName string literal. */
   private def reflectiveAllocType(call: Call): Option[String] =
     if (call.name != "newInstance") None
-    else
-      call.receiver.headOption.collect {
-        case fn: Call if fn.name == "forName" =>
-          fn.argument.collectAll[Literal].headOption.map(_.code.stripPrefix("\"").stripSuffix("\""))
-      }.flatten
+    else call.receiver.headOption.flatMap(classNameFromReflectiveChain)
+
+  private def classNameFromReflectiveChain(node: Expression): Option[String] = node match {
+    case fn: Call if fn.name == "forName" =>
+      fn.argument.collectAll[Literal].headOption.map(_.code.stripPrefix("\"").stripSuffix("\""))
+    case ctor: Call if ctor.name == "getDeclaredConstructor" || ctor.name == "getConstructor" =>
+      ctor.receiver.headOption.flatMap(classNameFromReflectiveChain)
+    case _ => None
+  }
 
   private def isOperator(name: String): Boolean = name != null && name.startsWith("<operator>")
 
