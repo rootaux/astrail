@@ -91,7 +91,7 @@ final class AndersenSolver(
     signature: String,
     argVarsK: Vector[Int],
     callResultVarK: Int,
-    seen: mutable.HashSet[Int]
+    seen: mutable.BitSet
   )
 
   /** Deferred virtual calls keyed by receiver id. */
@@ -323,7 +323,7 @@ final class AndersenSolver(
         signature      = vc.signature,
         argVarsK       = vc.argVars.map(v => k(ctx, v)),
         callResultVarK = k(ctx, vc.callResultVar),
-        seen           = mutable.HashSet.empty
+        seen           = mutable.BitSet.empty
       )
       vcallsByReceiver.getOrElseUpdate(rk, mutable.ArrayBuffer.empty).append(inst)
       val rset = pt.getOrElse(rk, PointsToSet.empty)
@@ -408,31 +408,33 @@ final class AndersenSolver(
 
   /** Resolve and instantiate callees for new allocation sites in the receiver's points-to set. */
   private def dischargeVirtualCall(inst: InstantiatedVirtualCall): Unit = {
-    val rset    = pt.getOrElse(find(inst.receiverK), PointsToSet.empty)
+    val rset = pt.getOrElse(find(inst.receiverK), PointsToSet.empty)
+    // Process only receiver allocation sites not yet seen for this call site: `seen` is the delta bookkeeping,
+    // so we never re-materialise the whole receiver set (rset.iterator.toArray) on a fire that adds nothing.
+    val newAllocs = rset.diffBits(inst.seen)
+    if (newAllocs.isEmpty) return
+    inst.seen |= newAllocs
     val targets = resolvedCallTargets.getOrElseUpdate(inst.callNodeId, mutable.LinkedHashSet.empty)
 
-    val allocs = rset.iterator.toArray
-    allocs.foreach { a =>
-      if (inst.seen.add(a)) {
-        val t = allocTable.typeOf(a)
-        lookupMethod(t, inst.methodName, inst.signature).foreach { calleeFullName =>
-          targets.add(calleeFullName)
-          val calleeCtx = a
-          instantiate(calleeCtx, calleeFullName)
-          val params   = paramsByMethod.getOrElse(calleeFullName, Vector.empty)
-          val thisName = params.headOption.map(_._2).getOrElse("this")
-          val thisK    = k(calleeCtx, PointerVar.local(calleeFullName, thisName))
-          val thisSet  = pt.getOrElseUpdate(thisK, PointsToSet.empty)
-          if (thisSet.add(a)) enqueue(thisK)
-          params.foreach { case (idx, pname) =>
-            if (idx >= 1) {
-              inst.argVarsK.lift(idx).foreach { argK =>
-                addSubsetEdge(find(argK), k(calleeCtx, PointerVar.local(calleeFullName, pname)))
-              }
+    newAllocs.foreach { a =>
+      val t = allocTable.typeOf(a)
+      lookupMethod(t, inst.methodName, inst.signature).foreach { calleeFullName =>
+        targets.add(calleeFullName)
+        val calleeCtx = a
+        instantiate(calleeCtx, calleeFullName)
+        val params   = paramsByMethod.getOrElse(calleeFullName, Vector.empty)
+        val thisName = params.headOption.map(_._2).getOrElse("this")
+        val thisK    = k(calleeCtx, PointerVar.local(calleeFullName, thisName))
+        val thisSet  = pt.getOrElseUpdate(thisK, PointsToSet.empty)
+        if (thisSet.add(a)) enqueue(thisK)
+        params.foreach { case (idx, pname) =>
+          if (idx >= 1) {
+            inst.argVarsK.lift(idx).foreach { argK =>
+              addSubsetEdge(find(argK), k(calleeCtx, PointerVar.local(calleeFullName, pname)))
             }
           }
-          addSubsetEdge(k(calleeCtx, PointerVar.ret(calleeFullName)), find(inst.callResultVarK))
         }
+        addSubsetEdge(k(calleeCtx, PointerVar.ret(calleeFullName)), find(inst.callResultVarK))
       }
     }
   }
