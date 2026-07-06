@@ -194,6 +194,17 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
           }
         }
 
+      case mr: MethodRef =>
+        // `lhs = () -> ...` / `lhs = Foo::bar` — copy the functional object into lhs.
+        lhsVar.foreach(v => emit(methodFullName, Constraint.Copy(v, methodRefVar(methodFullName, mr))))
+
+      case block: Block =>
+        // RHS wrapped in a block (e.g. a lambda with capture setup, or a nested new): copy from its value.
+        for {
+          v      <- lhsVar
+          srcVar <- exprVar(methodFullName, block)
+        } emit(methodFullName, Constraint.Copy(v, srcVar))
+
       case _ =>
     }
 
@@ -324,7 +335,25 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       // position flow into points-to sets, so factory/builder results resolve instead of being dropped.
       block.astChildren.collect { case e: Expression => e }.toList.lastOption
         .flatMap(exprVar(methodFullName, _))
+    case mr: MethodRef =>
+      Some(methodRefVar(methodFullName, mr))
     case _ => None
+  }
+
+  /** A lambda or method reference is an allocation of a functional object. Its allocation type is the synthetic
+    * lambda method's own full name (Joern sets MethodRef.typeFullName to it); the solver resolves any functional
+    * dispatch on it (run/apply/get/accept/...) to that method. Returns the pointer variable holding it.
+    */
+  private def methodRefVar(methodFullName: String, mr: MethodRef): String = {
+    val v = PointerVar.callResult(mr.id())
+    // Use methodFullName: it is always the target/lambda method. (typeFullName equals it for lambdas but is the
+    // functional interface for method references, on which the JDK dispatch would not resolve.)
+    val target = Option(mr.methodFullName).filter(_.nonEmpty)
+      .orElse(Option(mr.typeFullName).filter(_.nonEmpty))
+      .getOrElse("ANY")
+    val idx = allocTable.intern(mr.id(), target)
+    emit(methodFullName, Constraint.Alloc(v, idx))
+    v
   }
 
   // -------------------------------------------------------------------------
@@ -394,6 +423,9 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     * hierarchy is unavailable). Matches java.util.* or a simple name of a core collection interface. */
   private def isCollectionType(typeFullName: String): Boolean = {
     if (typeFullName == null || typeFullName.isEmpty) return false
+    // Functional interfaces live under java.util.function.* and are NOT collections; their accessors (get/apply/...)
+    // must stay virtual dispatches so lambdas/method refs resolve, not be treated as collection loads.
+    if (typeFullName.startsWith("java.util.function.")) return false
     typeFullName.startsWith("java.util.") || {
       val simple = typeFullName.substring(typeFullName.lastIndexOf('.') + 1)
       Set("List", "Map", "Set", "Collection", "Queue", "Deque", "Iterable").contains(simple)

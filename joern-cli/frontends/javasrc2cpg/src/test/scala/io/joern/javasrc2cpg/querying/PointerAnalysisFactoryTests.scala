@@ -126,4 +126,39 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "lambda assigned to a functional interface" should {
+    lazy val cpg = code("""
+        |import java.util.function.Supplier;
+        |class App {
+        |  String make() {
+        |    Supplier<String> s = () -> "hi";
+        |    return s.get();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "resolve the functional dispatch to the synthetic lambda method" in {
+      val targets = ptaTargets(cpg, "get")
+      targets.exists(_.contains("lambda")) shouldBe true
+    }
+  }
+
+  "method reference assigned to a functional interface" should {
+    lazy val cpg = code("""
+        |import java.util.function.Supplier;
+        |class App {
+        |  static String helper() { return "hi"; }
+        |  String make() {
+        |    Supplier<String> s = App::helper;
+        |    return s.get();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "resolve the functional dispatch to the referenced method" in {
+      val targets = ptaTargets(cpg, "get")
+      targets.exists(_.contains("helper")) shouldBe true
+    }
+  }
 }

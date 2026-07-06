@@ -441,6 +441,11 @@ final class AndersenSolver(
 
   /** Resolve method by walking the inheritance chain. Falls back to name-only match for generics erasure. */
   private def lookupMethod(typeFullName: String, methodName: String, signature: String): Option[String] = {
+    // Lambda / method reference: the allocation "type" is the synthetic lambda method's own full name (see
+    // ConstraintCollector.methodRefVar). It implements the functional-interface method regardless of the
+    // dispatched name (run/apply/get/...), so resolve straight to it.
+    if (methodByFullName.contains(typeFullName)) return Some(typeFullName)
+
     val chain = supertypesOf.getOrElse(typeFullName, List(typeFullName))
     chain.iterator
       .flatMap { t =>
