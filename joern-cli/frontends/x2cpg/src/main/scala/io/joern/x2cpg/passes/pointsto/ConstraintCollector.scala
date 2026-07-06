@@ -263,6 +263,13 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       fieldAccessParts(methodFullName, call).map { case (_, fld) => fieldSlotFromAccess(call, fld) }
     case call: Call if !isOperator(call.name) =>
       Some(PointerVar.callResult(call.id()))
+    case block: Block =>
+      // `new Foo(...)` lowers to a Block whose last child is the tmp identifier holding the freshly allocated
+      // object; the block's inner `$tmp = <operator>.alloc` assignment is already turned into an Alloc by
+      // handleAssignment. Mapping the block to that identifier lets allocations in argument / return / nested
+      // position flow into points-to sets, so factory/builder results resolve instead of being dropped.
+      block.astChildren.collect { case e: Expression => e }.toList.lastOption
+        .flatMap(exprVar(methodFullName, _))
     case _ => None
   }
 
