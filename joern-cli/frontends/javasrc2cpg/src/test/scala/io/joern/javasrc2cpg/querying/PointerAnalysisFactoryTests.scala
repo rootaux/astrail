@@ -233,4 +233,31 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "collection injection of all beans of a type" should {
+    lazy val cpg = code("""
+        |import java.util.List;
+        |import javax.inject.Inject;
+        |import org.springframework.stereotype.Component;
+        |interface Handler { void handle(); }
+        |@Component class RealHandler implements Handler { public void handle() {} }
+        |@Component class OtherHandler implements Handler { public void handle() {} }
+        |class App {
+        |  @Inject List<Handler> handlers;
+        |  void run() {
+        |    Handler h = handlers.get(0);
+        |    h.handle();
+        |  }
+        |}
+        |class Main {
+        |  void go() { new App().run(); }
+        |}
+        |""".stripMargin)
+
+    "seed the injected collection's elements and resolve a dispatch on a read element" in {
+      val targets = ptaTargets(cpg, "handle")
+      targets.exists(_.startsWith("RealHandler.handle")) shouldBe true
+      targets.exists(_.startsWith("OtherHandler.handle")) shouldBe true
+    }
+  }
 }

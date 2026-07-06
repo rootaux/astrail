@@ -56,12 +56,22 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       decl.member.foreach { member =>
         if (memberHasInjectAnnotation(member)) {
           val fieldType = Option(member.typeFullName).filter(_.nonEmpty).getOrElse("")
-          val impls     = diBindings.implsFor(fieldType)
-          if (impls.nonEmpty) {
-            val fieldVar = PointerVar.field(declType, member.name)
-            impls.foreach { concreteType =>
-              val idx = internSyntheticAlloc(concreteType)
-              emit(DiInitMethod, Constraint.Alloc(fieldVar, idx))
+          val fieldVar  = PointerVar.field(declType, member.name)
+          if (isCollectionType(fieldType)) {
+            // Collection injection (`@Inject List<Handler>`): Spring injects every bean of the generic element
+            // type. Model the field as a synthetic collection whose element slot holds each impl, so reads
+            // (list.get(), etc.) resolve via the same collection element machinery.
+            collectionElementType(member).foreach { elementType =>
+              val impls = diBindings.implsFor(elementType)
+              if (impls.nonEmpty) {
+                emit(DiInitMethod, Constraint.Alloc(fieldVar, internSyntheticAlloc(fieldType)))
+                val elemSlot = PointerVar.field(fieldType, CollElem)
+                impls.foreach(impl => emit(DiInitMethod, Constraint.Alloc(elemSlot, internSyntheticAlloc(impl))))
+              }
+            }
+          } else {
+            diBindings.implsFor(fieldType).foreach { concreteType =>
+              emit(DiInitMethod, Constraint.Alloc(fieldVar, internSyntheticAlloc(concreteType)))
             }
           }
         }
@@ -483,6 +493,12 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       Set("List", "Map", "Set", "Collection", "Queue", "Deque", "Iterable").contains(simple)
     }
   }
+
+  /** The generic element type of a collection-typed member, from its JVM generic signature
+    * (`Ljava.util.List<LHandler;>;` → `Handler`); `member.typeFullName` is the erased raw type. */
+  private val GenericElementRe = """<L([^;<>]+);""".r
+  private def collectionElementType(member: Member): Option[String] =
+    Option(member.genericSignature).flatMap(GenericElementRe.findFirstMatchIn).map(_.group(1))
 
   private def isOperator(name: String): Boolean = name != null && name.startsWith("<operator>")
 
