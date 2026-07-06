@@ -16,25 +16,21 @@ final class PointsToSet private (private val _bits: mutable.BitSet) {
   def contains(i: Int): Boolean = _bits.contains(i)
   def iterator: Iterator[Int]   = _bits.iterator
 
-  /** Add a single allocation site index. Returns true if the set changed. */
-  def add(i: Int): Boolean = {
-    val before = _bits.size
-    _bits.addOne(i)
-    _bits.size != before
-  }
+  /** Add a single allocation site index. Returns true if the set changed. `mutable.BitSet.add` is O(1) and reports
+    * whether the bit was newly set, so there is no need for a `size` popcount to detect the change.
+    */
+  def add(i: Int): Boolean = _bits.add(i)
 
-  /** Union `other` into this set. Returns true if this set changed. */
-  def unionInPlace(other: PointsToSet): Boolean = {
-    val before = _bits.size
-    _bits |= other._bits
-    _bits.size != before
-  }
+  /** Union `other` into this set. Returns true if this set changed. Detects change via the set difference (which
+    * short-circuits on the first new word) instead of two full `size` popcounts.
+    */
+  def unionInPlace(other: PointsToSet): Boolean = absorb(other._bits)
 
   /** Union a raw BitSet delta into this set. Returns true if the set changed. */
   def absorb(delta: mutable.BitSet): Boolean = {
-    val before = _bits.size
-    _bits |= delta
-    _bits.size != before
+    val newBits = delta &~ _bits
+    if (newBits.isEmpty) false
+    else { _bits |= newBits; true }
   }
 
   /** `this \ other` as a fresh BitSet. */
