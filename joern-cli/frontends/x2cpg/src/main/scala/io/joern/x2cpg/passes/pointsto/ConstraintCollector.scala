@@ -200,7 +200,10 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
 
   private def handleCall(methodFullName: String, call: Call): Unit = {
     val resultVar = PointerVar.callResult(call.id())
-    val argVars   = call.argument.toVector.flatMap(exprVar(methodFullName, _))
+    // Key argument pointer variables by their Joern argumentIndex (receiver/this = 0, explicit args from 1),
+    // which matches MethodParameterIn.index. Keeping the index survives the flatMap that drops primitive args,
+    // so the solver can bind each argument to the correct parameter.
+    val argVars = call.argument.l.flatMap(a => exprVar(methodFullName, a).map(a.argumentIndex -> _)).toMap
 
     call.dispatchType match {
       case DispatchTypes.DYNAMIC_DISPATCH =>
@@ -232,7 +235,7 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
   private def emitStaticCall(
     methodFullName: String,
     call: Call,
-    argVars: Vector[String],
+    argVars: Map[Int, String],
     resultVar: String
   ): Unit = {
     if (call.methodFullName == null || call.methodFullName.isEmpty) return

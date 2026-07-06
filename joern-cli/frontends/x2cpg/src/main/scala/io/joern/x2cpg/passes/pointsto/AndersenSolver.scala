@@ -89,7 +89,7 @@ final class AndersenSolver(
     receiverK: Int,
     methodName: String,
     signature: String,
-    argVarsK: Vector[Int],
+    argVarsK: Map[Int, Int],
     callResultVarK: Int,
     seen: mutable.BitSet
   )
@@ -321,7 +321,7 @@ final class AndersenSolver(
         receiverK      = rk,
         methodName     = vc.methodName,
         signature      = vc.signature,
-        argVarsK       = vc.argVars.map(v => k(ctx, v)),
+        argVarsK       = vc.argVars.map { case (i, v) => i -> k(ctx, v) },
         callResultVarK = k(ctx, vc.callResultVar),
         seen           = mutable.BitSet.empty
       )
@@ -337,7 +337,7 @@ final class AndersenSolver(
         .add(sc.calleeFullName)
       paramsByMethod.get(sc.calleeFullName).foreach { params =>
         params.foreach { case (idx, pname) =>
-          sc.argVars.lift(idx).foreach { argVar =>
+          sc.argVars.get(idx).foreach { argVar =>
             addSubsetEdge(
               k(ctx, argVar),
               k(calleeCtx, PointerVar.local(sc.calleeFullName, pname))
@@ -429,7 +429,7 @@ final class AndersenSolver(
         if (thisSet.add(a)) enqueue(thisK)
         params.foreach { case (idx, pname) =>
           if (idx >= 1) {
-            inst.argVarsK.lift(idx).foreach { argK =>
+            inst.argVarsK.get(idx).foreach { argK =>
               addSubsetEdge(find(argK), k(calleeCtx, PointerVar.local(calleeFullName, pname)))
             }
           }

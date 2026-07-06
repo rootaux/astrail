@@ -53,15 +53,9 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
         |""".stripMargin)
 
     "flow the argument allocation into the callee and resolve the dispatch" in {
-      // B1 correctly puts the allocation into the call's argVars, but the argument->parameter binding is
-      // mis-indexed for reference arguments (compacted argVars from flatMap(exprVar) vs param index, and no
-      // receiver slot on static calls), so the parameter never receives it. That is a separate arg-binding
-      // fix (next commit); the allocation modelling itself is proven by the return-position test above.
-      pendingUntilFixed {
-        val targets = ptaTargets(cpg, "greet")
-        targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
-        targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
-      }
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
 }
