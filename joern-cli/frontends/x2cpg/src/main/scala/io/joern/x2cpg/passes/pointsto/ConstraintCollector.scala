@@ -270,6 +270,13 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
           srcVar <- exprVar(methodFullName, call)
         } emit(methodFullName, Constraint.Copy(v, srcVar))
 
+      case call: Call if call.name == Operators.conditional =>
+        // `lhs = cond ? a : b` — copy the ternary result (the union of both branches) into lhs.
+        for {
+          v      <- lhsVar
+          srcVar <- exprVar(methodFullName, call)
+        } emit(methodFullName, Constraint.Copy(v, srcVar))
+
       case call: Call if call.name == Operators.indexAccess =>
         // `lhs = a[i]` — load the array's synthetic element slot into lhs.
         for {
@@ -456,6 +463,15 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       // A cast is identity for points-to: `(Foo) bar` holds the same object as `bar`. The operand is the last
       // argument (the target type is a TypeRef in argument position 1), so map the cast to the operand.
       call.argument.l.lastOption.flatMap(exprVar(methodFullName, _))
+    case call: Call if call.name == Operators.conditional =>
+      // `cond ? a : b` evaluates to either branch, so the result points to the union of both branches. Arguments
+      // are cond (1), then-branch (2), else-branch (3).
+      val v = PointerVar.callResult(call.id())
+      call.argument.l
+        .filter(_.argumentIndex >= 2)
+        .flatMap(exprVar(methodFullName, _))
+        .foreach(branch => emit(methodFullName, Constraint.Copy(v, branch)))
+      Some(v)
     case call: Call if call.name == Operators.indexAccess =>
       // `a[i]` in value position reads the array's synthetic element slot (all elements aliased, index-insensitive).
       call.argument.headOption.map(base => PointerVar.field(typeFullNameOf(base), ArrayElem))

@@ -409,4 +409,26 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherException.handle")) shouldBe false
     }
   }
+
+  "a ternary conditional" should {
+    lazy val cpg = code("""
+        |interface I { void m(); }
+        |class A implements I { public void m() {} }
+        |class B implements I { public void m() {} }
+        |class C implements I { public void m() {} }
+        |class App {
+        |  void run(boolean cond) {
+        |    I x = cond ? new A() : new B();
+        |    x.m();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "point to both branches, so a dispatch on the result resolves to each" in {
+      val targets = ptaTargets(cpg, "m")
+      targets.exists(_.startsWith("A.m")) shouldBe true
+      targets.exists(_.startsWith("B.m")) shouldBe true
+      targets.exists(_.startsWith("C.m")) shouldBe false
+    }
+  }
 }
