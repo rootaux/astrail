@@ -175,6 +175,13 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
           srcVar <- exprVar(methodFullName, call)
         } emit(methodFullName, Constraint.Copy(v, srcVar))
 
+      case call: Call if call.name == Operators.indexAccess =>
+        // `lhs = a[i]` — load the array's synthetic element slot into lhs.
+        for {
+          dst     <- lhsVar
+          baseVar <- call.argument.headOption.flatMap(exprVar(methodFullName, _))
+        } emit(methodFullName, Constraint.Load(dst, baseVar, ArrayElem))
+
       case call: Call if !isOperator(call.name) =>
         lhsVar.foreach { v =>
           emit(methodFullName, Constraint.Copy(v, PointerVar.callResult(call.id())))
@@ -197,6 +204,12 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
             emit(methodFullName, Constraint.Store(baseVar, fldName, srcVar))
           }
         }
+      case ia: Call if ia.name == Operators.indexAccess =>
+        // `a[i] = x` — store x into the array's synthetic element slot.
+        for {
+          baseVar <- ia.argument.headOption.flatMap(exprVar(methodFullName, _))
+          srcVar  <- exprVar(methodFullName, rhs)
+        } emit(methodFullName, Constraint.Store(baseVar, ArrayElem, srcVar))
       case _ =>
     }
   }
@@ -275,6 +288,9 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       // A cast is identity for points-to: `(Foo) bar` holds the same object as `bar`. The operand is the last
       // argument (the target type is a TypeRef in argument position 1), so map the cast to the operand.
       call.argument.l.lastOption.flatMap(exprVar(methodFullName, _))
+    case call: Call if call.name == Operators.indexAccess =>
+      // `a[i]` in value position reads the array's synthetic element slot (all elements aliased, index-insensitive).
+      call.argument.headOption.map(base => PointerVar.field(typeFullNameOf(base), ArrayElem))
     case call: Call if !isOperator(call.name) =>
       Some(PointerVar.callResult(call.id()))
     case block: Block =>
@@ -331,6 +347,11 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
   // -------------------------------------------------------------------------
   // Misc predicates
   // -------------------------------------------------------------------------
+
+  /** Synthetic field name for array elements. Arrays are modelled index-insensitively: every element aliases one
+    * slot, so `a[i] = x; y = a[j]` makes `y` point to `x`.
+    */
+  private val ArrayElem = "[]"
 
   private def isOperator(name: String): Boolean = name != null && name.startsWith("<operator>")
 

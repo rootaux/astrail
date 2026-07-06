@@ -80,4 +80,26 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "allocation stored into and loaded from an array element" should {
+    lazy val cpg = code("""
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class App {
+        |  void run() {
+        |    Greeter[] gs = new Greeter[1];
+        |    gs[0] = new RealGreeter();
+        |    Greeter g = gs[0];
+        |    g.greet();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "flow the element through the array's synthetic slot and resolve the dispatch" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }
