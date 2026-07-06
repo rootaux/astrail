@@ -12,9 +12,10 @@ import scala.collection.mutable
   * under a fresh context keyed by the receiver's allocation site (k=1 object sensitivity). Static calls pass the
   * caller's context through. Field slots are context-insensitive.
   *
-  * Pointer variables are packed as `"$ctx|$var"` strings; field slots (prefix `F:`) are always packed under the
-  * default context. Fixed point is reached because all operations are monotone (sets only grow, instantiation is
-  * memoised).
+  * Pointer variables are packed as `"$ctx|$var"` and then interned to dense `Int` ids (see [[intern]]); field slots
+  * (prefix `F:`) are always packed under the default context. All hot-path maps are keyed by these int ids, so the
+  * fixpoint loop never hashes a string. Fixed point is reached because all operations are monotone (sets only grow,
+  * instantiation is memoised).
   */
 final class AndersenSolver(
   cpg: Cpg,
@@ -27,37 +28,48 @@ final class AndersenSolver(
   /** Default context key, used for baseline instantiation and context-insensitive field slots. */
   private val DEFAULT_CTX: Int = -1
 
-  /** Pack a pointer variable under a context. Field slots are always packed under [[DEFAULT_CTX]]. */
-  @inline private def k(ctx: Int, v: String): String =
-    if (v.startsWith("F:")) s"$DEFAULT_CTX|$v"
-    else s"$ctx|$v"
+  // ---------------------------------------------------------------------------
+  // Pointer-variable interning: packed "$ctx|$var" string -> dense int id.
+  // The string is built (and hashed) once, at intern time; every subsequent map
+  // access on the hot path uses the int id.
+  // ---------------------------------------------------------------------------
 
-  /** Points-to map: packed variable key → set of allocation-site indices. */
-  private val pt = mutable.HashMap.empty[String, PointsToSet]
+  private val varIdOf = mutable.HashMap.empty[String, Int]
+  private val varKeys = mutable.ArrayBuffer.empty[String]
 
-  /** Subset graph: for every Copy-like constraint we record an edge `srcKey → dstKey`. */
-  private val subsetOut = mutable.HashMap.empty[String, mutable.HashSet[String]]
+  @inline private def intern(packed: String): Int =
+    varIdOf.getOrElseUpdate(packed, { val i = varKeys.size; varKeys += packed; i })
 
-  /** Deferred field loads keyed by packed base key. Each entry is `(packedDst, fieldName)`. */
-  private val loadsByBase = mutable.HashMap.empty[String, mutable.ArrayBuffer[(String, String)]]
+  /** Pack a pointer variable under a context and intern it to an int id. Field slots always use [[DEFAULT_CTX]]. */
+  @inline private def k(ctx: Int, v: String): Int =
+    intern(if (v.startsWith("F:")) s"$DEFAULT_CTX|$v" else s"$ctx|$v")
 
-  /** Deferred field stores keyed by packed base key. Each entry is `(fieldName, packedSrc)`. */
-  private val storesByBase = mutable.HashMap.empty[String, mutable.ArrayBuffer[(String, String)]]
+  /** Points-to map: interned variable id → set of allocation-site indices. */
+  private val pt = mutable.HashMap.empty[Int, PointsToSet]
 
-  /** A virtual call instantiated under a specific caller context, with pre-packed pointer variables. */
+  /** Subset graph: for every Copy-like constraint we record an edge `srcId → dstId`. */
+  private val subsetOut = mutable.HashMap.empty[Int, mutable.HashSet[Int]]
+
+  /** Deferred field loads keyed by base id. Each entry is `(dstId, fieldName)`. */
+  private val loadsByBase = mutable.HashMap.empty[Int, mutable.ArrayBuffer[(Int, String)]]
+
+  /** Deferred field stores keyed by base id. Each entry is `(fieldName, srcId)`. */
+  private val storesByBase = mutable.HashMap.empty[Int, mutable.ArrayBuffer[(String, Int)]]
+
+  /** A virtual call instantiated under a specific caller context, with pre-interned pointer variables. */
   private final case class InstantiatedVirtualCall(
     callerCtx: Int,
     callNodeId: Long,
-    receiverK: String,
+    receiverK: Int,
     methodName: String,
     signature: String,
-    argVarsK: Vector[String],
-    callResultVarK: String,
+    argVarsK: Vector[Int],
+    callResultVarK: Int,
     seen: mutable.HashSet[Int]
   )
 
-  /** Deferred virtual calls keyed by packed receiver key. */
-  private val vcallsByReceiver = mutable.HashMap.empty[String, mutable.ArrayBuffer[InstantiatedVirtualCall]]
+  /** Deferred virtual calls keyed by receiver id. */
+  private val vcallsByReceiver = mutable.HashMap.empty[Int, mutable.ArrayBuffer[InstantiatedVirtualCall]]
 
   /** Resolved virtual-dispatch targets keyed by call node id. Read by [[PointerAnalysis]] to rewrite CALL edges. */
   val resolvedCallTargets: mutable.HashMap[Long, mutable.LinkedHashSet[String]] =
@@ -66,12 +78,12 @@ final class AndersenSolver(
   /** Memoises `(ctx, methodFullName)` pairs we have already instantiated, so recursive cycles terminate. */
   private val instantiated = mutable.HashSet.empty[(Int, String)]
 
-  private val worklist = mutable.Queue.empty[String]
+  private val worklist = mutable.Queue.empty[Int]
 
   /** Per-variable record of the allocation-site indices already propagated out of the variable along its
     * subset edges. Enables difference (delta) propagation: only newly-arrived indices are pushed each fire.
     */
-  private val propagated = mutable.HashMap.empty[String, mutable.BitSet]
+  private val propagated = mutable.HashMap.empty[Int, mutable.BitSet]
 
   // ---------------------------------------------------------------------------
   // CPG lookup tables
@@ -163,7 +175,8 @@ final class AndersenSolver(
       }
     }
 
-    pt.toMap
+    // Re-key the result back to the packed variable strings for consumers ([[PointerAnalysis]]).
+    pt.iterator.map { case (id, set) => varKeys(id) -> set }.toMap
   }
 
   // ---------------------------------------------------------------------------
@@ -258,10 +271,10 @@ final class AndersenSolver(
   /** Number of subset edges in the graph. */
   def subsetEdgeCount: Int = subsetOut.valuesIterator.map(_.size).sum
 
-  private def enqueue(v: String): Unit = worklist.enqueue(v)
+  private def enqueue(v: Int): Unit = worklist.enqueue(v)
 
   /** Add a subset edge `srcK → dstK` and immediately push whatever is already in `srcK`. */
-  private def addSubsetEdge(srcK: String, dstK: String): Unit = {
+  private def addSubsetEdge(srcK: Int, dstK: Int): Unit = {
     val outs = subsetOut.getOrElseUpdate(srcK, mutable.HashSet.empty)
     if (outs.add(dstK)) {
       val srcSet = pt.getOrElse(srcK, PointsToSet.empty)
@@ -273,7 +286,7 @@ final class AndersenSolver(
   }
 
   /** Wire per-type field slots for every type in `pt(baseK)` into `dstK`. */
-  private def dischargeLoad(dstK: String, baseK: String, fld: String): Unit = {
+  private def dischargeLoad(dstK: Int, baseK: Int, fld: String): Unit = {
     val baseSet = pt.getOrElse(baseK, PointsToSet.empty)
     allocTable.typesOf(baseSet).foreach { t =>
       val slotK = k(DEFAULT_CTX, PointerVar.field(t, fld))
@@ -281,7 +294,7 @@ final class AndersenSolver(
     }
   }
 
-  private def dischargeStore(baseK: String, fld: String, srcK: String): Unit = {
+  private def dischargeStore(baseK: Int, fld: String, srcK: Int): Unit = {
     val baseSet = pt.getOrElse(baseK, PointsToSet.empty)
     allocTable.typesOf(baseSet).foreach { t =>
       val slotK = k(DEFAULT_CTX, PointerVar.field(t, fld))
