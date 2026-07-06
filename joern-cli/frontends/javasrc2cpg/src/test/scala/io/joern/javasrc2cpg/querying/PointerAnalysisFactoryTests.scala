@@ -210,4 +210,27 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "value read from a static field (singleton)" should {
+    lazy val cpg = code("""
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class Holder {
+        |  static Greeter INSTANCE = new RealGreeter();
+        |}
+        |class App {
+        |  void run() {
+        |    Greeter g = Holder.INSTANCE;
+        |    g.greet();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "resolve a dispatch on a value read from a static field" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }

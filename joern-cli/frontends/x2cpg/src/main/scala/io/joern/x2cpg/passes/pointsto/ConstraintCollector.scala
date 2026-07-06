@@ -163,10 +163,14 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
         lhsVar.foreach(v => emit(methodFullName, Constraint.Alloc(v, idx)))
 
       case call: Call if call.name == Operators.fieldAccess || call.name == Operators.indirectFieldAccess =>
-        for {
-          dst                <- lhsVar
-          (baseVar, fldName) <- fieldAccessParts(methodFullName, call)
-        } emit(methodFullName, Constraint.Load(dst, baseVar, fldName))
+        staticFieldSlot(call) match {
+          case Some(slot) => lhsVar.foreach(dst => emit(methodFullName, Constraint.Copy(dst, slot)))
+          case None =>
+            for {
+              dst                <- lhsVar
+              (baseVar, fldName) <- fieldAccessParts(methodFullName, call)
+            } emit(methodFullName, Constraint.Load(dst, baseVar, fldName))
+        }
 
       case call: Call if call.name == Operators.cast =>
         // `lhs = (T) operand` — a cast preserves points-to, so copy from the cast operand into lhs.
@@ -210,10 +214,15 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
 
     lhs match {
       case fa: Call if fa.name == Operators.fieldAccess || fa.name == Operators.indirectFieldAccess =>
-        fieldAccessParts(methodFullName, fa).foreach { case (baseVar, fldName) =>
-          exprVar(methodFullName, rhs).foreach { srcVar =>
-            emit(methodFullName, Constraint.Store(baseVar, fldName, srcVar))
-          }
+        staticFieldSlot(fa) match {
+          case Some(slot) =>
+            exprVar(methodFullName, rhs).foreach(srcVar => emit(methodFullName, Constraint.Copy(slot, srcVar)))
+          case None =>
+            fieldAccessParts(methodFullName, fa).foreach { case (baseVar, fldName) =>
+              exprVar(methodFullName, rhs).foreach { srcVar =>
+                emit(methodFullName, Constraint.Store(baseVar, fldName, srcVar))
+              }
+            }
         }
       case ia: Call if ia.name == Operators.indexAccess =>
         // `a[i] = x` — store x into the array's synthetic element slot.
@@ -318,13 +327,15 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     case p: MethodParameterIn =>
       Some(PointerVar.local(methodFullName, p.name))
     case call: Call if call.name == Operators.fieldAccess || call.name == Operators.indirectFieldAccess =>
-      // Value-position field read: load through the base's concrete types (the same slot writes use), not the
-      // base's declared-type slot, so a value stored into F:<concreteType>:f is read back even when the base is
-      // polymorphic or its type is unknown.
-      fieldAccessParts(methodFullName, call).map { case (baseVar, fld) =>
-        val v = PointerVar.callResult(call.id())
-        emit(methodFullName, Constraint.Load(v, baseVar, fld))
-        v
+      // Static field `Type.field` reads its type-scoped slot directly; an instance field reads through the base's
+      // concrete types (the same slot writes use), not the declared-type slot, so a value stored into
+      // F:<concreteType>:f is read back even when the base is polymorphic or its type is unknown.
+      staticFieldSlot(call).orElse {
+        fieldAccessParts(methodFullName, call).map { case (baseVar, fld) =>
+          val v = PointerVar.callResult(call.id())
+          emit(methodFullName, Constraint.Load(v, baseVar, fld))
+          v
+        }
       }
     case call: Call if isAllocation(call) =>
       // A direct `new T(...)` in value position (e.g. a store RHS, which lowers to an <init>/alloc call rather
@@ -380,6 +391,33 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
   // -------------------------------------------------------------------------
 
   /** Extract `(baseVar, fieldName)` from a field-access call. */
+  /** Static field access `Type.field`: the base is a TypeRef (a type, not an object), so the slot is scoped to
+    * that type directly (F:Type:field) rather than resolved through a base object's points-to, which is empty.
+    * Returns the type-scoped field slot, or None for an ordinary instance field access.
+    */
+  /** Short type names in the CPG, to recognise a static field access whose base Joern models as an Identifier
+    * (e.g. `Holder.INSTANCE`) rather than a TypeRef. */
+  private lazy val knownTypeNames: Set[String] = cpg.typeDecl.name.toSet
+
+  private def staticFieldSlot(fa: Call): Option[String] = {
+    fa.argument.l match {
+      case base :: fldNode :: _ =>
+        val fld = fldNode match {
+          case fi: FieldIdentifier => fi.canonicalName
+          case o: AstNode          => o.code
+        }
+        base match {
+          case tr: TypeRef =>
+            Option(tr.typeFullName).filter(_.nonEmpty).map(t => PointerVar.field(t, fld))
+          case id: Identifier if knownTypeNames.contains(id.name) =>
+            // Base is a type name, not a variable: a static access. Scope the slot to that type.
+            Some(PointerVar.field(Option(id.typeFullName).filter(_.nonEmpty).getOrElse(id.name), fld))
+          case _ => None
+        }
+      case _ => None
+    }
+  }
+
   private def fieldAccessParts(methodFullName: String, fa: Call): Option[(String, String)] = {
     val as = fa.argument.l
     if (as.size < 2) return None
