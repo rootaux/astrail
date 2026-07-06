@@ -185,4 +185,29 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
     }
   }
+
+  "overloaded method resolved by exact signature" should {
+    lazy val cpg = code("""
+        |interface Greeter { String greet(); }
+        |class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class Registry {
+        |  Greeter pick(Greeter g) { return g; }
+        |  Greeter pick(int i) { return new OtherGreeter(); }
+        |}
+        |class App {
+        |  void run() {
+        |    Registry r = new Registry();
+        |    Greeter g = r.pick(new RealGreeter());
+        |    g.greet();
+        |  }
+        |}
+        |""".stripMargin)
+
+    "route the call to the exact overload, not an arbitrary one" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }

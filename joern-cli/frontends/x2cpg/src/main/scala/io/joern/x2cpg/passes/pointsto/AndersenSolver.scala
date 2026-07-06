@@ -418,7 +418,7 @@ final class AndersenSolver(
 
     newAllocs.foreach { a =>
       val t = allocTable.typeOf(a)
-      lookupMethod(t, inst.methodName, inst.signature).foreach { calleeFullName =>
+      lookupMethods(t, inst.methodName, inst.signature).foreach { calleeFullName =>
         targets.add(calleeFullName)
         val calleeCtx = a
         instantiate(calleeCtx, calleeFullName)
@@ -439,21 +439,27 @@ final class AndersenSolver(
     }
   }
 
-  /** Resolve method by walking the inheritance chain. Falls back to name-only match for generics erasure. */
-  private def lookupMethod(typeFullName: String, methodName: String, signature: String): Option[String] = {
+  /** Resolve dispatch targets by walking the inheritance chain. An exact `(name, signature)` match gives a single
+    * precise target; when no signature matches (generics erasure, bridge methods, ANY-typed args) it falls back to
+    * ALL same-name overloads on the most specific type that has one — deterministic and recall-preserving, rather
+    * than the previous arbitrary first match over an unordered map.
+    */
+  private def lookupMethods(typeFullName: String, methodName: String, signature: String): Set[String] = {
     // Lambda / method reference: the allocation "type" is the synthetic lambda method's own full name (see
     // ConstraintCollector.methodRefVar). It implements the functional-interface method regardless of the
     // dispatched name (run/apply/get/...), so resolve straight to it.
-    if (methodByFullName.contains(typeFullName)) return Some(typeFullName)
+    if (methodByFullName.contains(typeFullName)) return Set(typeFullName)
 
     val chain = supertypesOf.getOrElse(typeFullName, List(typeFullName))
     chain.iterator
-      .flatMap { t =>
+      .map { t =>
         val tbl = methodByType.getOrElse(t, Map.empty)
-        tbl
-          .get((methodName, signature))
-          .orElse(tbl.collectFirst { case ((n, _), fn) if n == methodName => fn })
+        tbl.get((methodName, signature)) match {
+          case Some(fn) => Set(fn)
+          case None     => tbl.collect { case ((n, _), fn) if n == methodName => fn }.toSet
+        }
       }
-      .nextOption()
+      .find(_.nonEmpty)
+      .getOrElse(Set.empty)
   }
 }
