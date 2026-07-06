@@ -278,4 +278,26 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe true
     }
   }
+
+  "@Qualifier-pinned injection of one of several impls" should {
+    lazy val cpg = code("""
+        |import org.springframework.stereotype.Component;
+        |import org.springframework.beans.factory.annotation.Autowired;
+        |import org.springframework.beans.factory.annotation.Qualifier;
+        |interface Greeter { String greet(); }
+        |@Component class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |@Component class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |class App {
+        |  @Autowired @Qualifier("realGreeter") Greeter g;
+        |  void run() { g.greet(); }
+        |}
+        |class Main { void go() { new App().run(); } }
+        |""".stripMargin)
+
+    "inject only the qualified bean, not every impl of the interface" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe false
+    }
+  }
 }

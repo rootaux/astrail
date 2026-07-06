@@ -70,9 +70,17 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
               }
             }
           } else {
-            diBindings.implsFor(fieldType).foreach { concreteType =>
-              emit(DiInitMethod, Constraint.Alloc(fieldVar, internSyntheticAlloc(concreteType)))
+            val allImpls = diBindings.implsFor(fieldType)
+            // @Qualifier("name") pins the injection to one bean: keep only the impl whose bean name matches.
+            // Fall back to all impls if the qualifier names a bean we can't resolve (e.g. explicit @Component name),
+            // so precision never costs recall.
+            val impls = qualifierValue(member) match {
+              case Some(qual) =>
+                val matched = allImpls.filter(impl => defaultBeanName(impl) == qual)
+                if (matched.nonEmpty) matched else allImpls
+              case None => allImpls
             }
+            impls.foreach(concreteType => emit(DiInitMethod, Constraint.Alloc(fieldVar, internSyntheticAlloc(concreteType))))
           }
         }
       }
@@ -126,6 +134,23 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     method.name == "<init>" &&
       method.typeDecl.fullName.headOption.exists(managedTypes.contains) &&
       method.typeDecl.method.nameExact("<init>").size == 1
+
+  private val QualifierAnnot = "org.springframework.beans.factory.annotation.Qualifier"
+
+  /** The value of a member's `@Qualifier("name")` annotation, if present. */
+  private def qualifierValue(member: Member): Option[String] =
+    member.astChildren
+      .collectAll[Annotation]
+      .filter(_.fullName == QualifierAnnot)
+      .flatMap(_.parameterAssign.code)
+      .headOption
+      .map(_.stripPrefix("\"").stripSuffix("\""))
+
+  /** Default Spring bean name of a type: its simple name decapitalised (RealGreeter -> realGreeter). */
+  private def defaultBeanName(implFullName: String): String = {
+    val simple = implFullName.substring(implFullName.lastIndexOf('.') + 1)
+    if (simple.isEmpty) simple else simple.head.toLower.toString + simple.tail
+  }
 
   private def memberHasInjectAnnotation(member: Member): Boolean =
     member.astChildren.collectAll[Annotation].fullName.exists(ALL_INJECT_ANNOT.contains)
