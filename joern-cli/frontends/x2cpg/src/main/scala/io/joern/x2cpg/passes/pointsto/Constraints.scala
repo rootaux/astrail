@@ -50,7 +50,7 @@ object Constraint {
   final case class StaticCall(
     callNodeId: Long,
     calleeFullName: String,
-    argVars: Vector[String],
+    argVars: Map[Int, String],
     callResultVar: String
   ) extends Constraint
 
@@ -62,7 +62,7 @@ object Constraint {
     receiver: String,
     methodName: String,
     signature: String,
-    argVars: Vector[String],
+    argVars: Map[Int, String],
     callResultVar: String
   ) extends Constraint
 }

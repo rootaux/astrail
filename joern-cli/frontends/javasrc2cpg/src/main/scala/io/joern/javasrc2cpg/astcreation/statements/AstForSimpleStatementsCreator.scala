@@ -29,7 +29,7 @@ import io.joern.javasrc2cpg.astcreation.expressions.PatternInitAndRefAsts
 import io.joern.javasrc2cpg.astcreation.{AstCreator, ExpectedType}
 import io.joern.javasrc2cpg.util.NameConstants
 import io.joern.x2cpg.Ast
-import io.shiftleft.codepropertygraph.generated.nodes.{NewBlock, NewCall, NewControlStructure, NewJumpTarget, NewReturn}
+import io.shiftleft.codepropertygraph.generated.nodes.{NewBlock, NewCall, NewControlStructure, NewJumpTarget, NewLocal, NewReturn}
 import io.shiftleft.codepropertygraph.generated.{ControlStructureTypes, DispatchTypes, EdgeTypes}
 import io.joern.x2cpg.utils.AstPropertiesUtil.*
 
@@ -452,7 +452,24 @@ trait AstForSimpleStatementsCreator { this: AstCreator =>
   }
 
   private[statements] def astForCatchClause(catchClause: CatchClause): Ast = {
-    astForBlockStatement(catchClause.getBody)
+    // Model the caught exception parameter `catch (T e)` as a local in the catch scope, so the exception object
+    // is bound to a named variable (JavaParser drops it otherwise, leaving `e` as an unresolved identifier).
+    scope.pushBlockScope()
+    val param            = catchClause.getParameter
+    val name             = param.getNameAsString
+    val typeFullName     = tryWithSafeStackOverflow(param.getType).toOption.flatMap(typeInfoCalc.fullName).getOrElse("ANY")
+    val genericSignature = binarySignatureCalculator.variableBinarySignature(param.getType)
+    val local = NewLocal()
+      .name(name)
+      .code(name)
+      .typeFullName(typeFullName)
+      .genericSignature(genericSignature)
+      .lineNumber(line(catchClause))
+      .columnNumber(column(catchClause))
+    scope.enclosingBlock.foreach(_.addLocal(local, name))
+    val bodyAst = astForBlockStatement(catchClause.getBody, prefixAsts = Seq(Ast(local)))
+    scope.popBlockScope()
+    bodyAst
   }
 
   private[statements] def astsForTry(stmt: TryStmt): Seq[Ast] = {

@@ -51,6 +51,26 @@ class NewControlStructureTests extends JavaSrcCode2CpgFixture {
     }
   }
 
+  "a catch clause parameter" should {
+    val cpg = code("""
+        |public class Foo {
+        |  void foo() {
+        |    try { bar(); }
+        |    catch (RuntimeException e) { e.getMessage(); }
+        |  }
+        |}
+        |""".stripMargin)
+
+    "be modelled as a local in the catch scope, referenced by uses of the caught variable" in {
+      val List(catchBlock) = cpg.controlStructure.isCatch.astChildren.isBlock.l
+      val List(eLocal)     = catchBlock.astChildren.isLocal.l
+      eLocal.name shouldBe "e"
+      eLocal.typeFullName shouldBe "java.lang.RuntimeException"
+      val List(eUse) = cpg.call.name("getMessage").receiver.isIdentifier.name("e").l
+      eUse.refsTo.collectAll[Local].l shouldBe List(eLocal)
+    }
+  }
+
   "try-with-resource blocks" should {
     val cpg = code("""
 		|import java.io.FileReader;

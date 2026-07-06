@@ -16,6 +16,7 @@ final class SpringCollector(override protected val cpg: Cpg) extends DiHelpers {
   def collect(): DiBindings = {
     collectComponents()
     collectBeanMethods()
+    collectFactoryBeans()
 
     val result = DiBindings(
       interfaceToImpls = bindings.view.mapValues(_.toSet).toMap,
@@ -73,6 +74,30 @@ final class SpringCollector(override protected val cpg: Cpg) extends DiHelpers {
       }
     }
   }
+
+  // -------------------------------------------------------------------------
+  // FactoryBean<T>
+  // -------------------------------------------------------------------------
+
+  /** A Spring `FactoryBean<T>` produces its bean from `getObject()`, so the bean's declared type binds to the
+    * concrete type that method allocates and returns (`Greeter -> RealGreeter`). Same shape as an @Bean method. */
+  private def collectFactoryBeans(): Unit = {
+    cpg.typeDecl.filter(isFactoryBean).foreach { decl =>
+      decl.method.nameExact("getObject").foreach { method =>
+        Option(method.methodReturn.typeFullName).filter(_.nonEmpty).foreach { rt =>
+          method.ast.isReturn.foreach { r =>
+            r.astChildren.foreach { child =>
+              allocationTypeOf(child).foreach(concrete => addBinding(key = rt, impl = concrete))
+            }
+          }
+          classRegistrations.add(rt)
+        }
+      }
+    }
+  }
+
+  private def isFactoryBean(decl: TypeDecl): Boolean =
+    decl.inheritsFromTypeFullName.exists(t => t == "org.springframework.beans.factory.FactoryBean" || t.split('.').last == "FactoryBean")
 
   // -------------------------------------------------------------------------
   // Annotation constants
