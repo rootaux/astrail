@@ -14,8 +14,15 @@ import scala.collection.mutable
   *
   * Pointer variables are packed as `"$ctx|$var"` and then interned to dense `Int` ids (see [[intern]]); field slots
   * (prefix `F:`) are always packed under the default context. All hot-path maps are keyed by these int ids, so the
-  * fixpoint loop never hashes a string. Fixed point is reached because all operations are monotone (sets only grow,
-  * instantiation is memoised).
+  * fixpoint loop never hashes a string.
+  *
+  * Cycles in the subset (copy) graph are collapsed online with Lazy Cycle Detection: when propagating along an edge
+  * `v → d` leaves `pt(d)` unchanged and equal to `pt(v)`, and `d` can reach `v` in the subset graph, the two are in a
+  * strongly connected component and share one final points-to set, so they are merged (union-find, see [[find]] /
+  * [[collapse]]). This avoids churning the same allocation sites around a cycle O(cycle length) times.
+  *
+  * Fixed point is reached because all operations are monotone (sets only grow, instantiation is memoised, and a
+  * collapse strictly reduces the number of live variables).
   */
 final class AndersenSolver(
   cpg: Cpg,
@@ -31,7 +38,7 @@ final class AndersenSolver(
   // ---------------------------------------------------------------------------
   // Pointer-variable interning: packed "$ctx|$var" string -> dense int id.
   // The string is built (and hashed) once, at intern time; every subsequent map
-  // access on the hot path uses the int id.
+  // access on the hot path uses the int id, resolved through the union-find.
   // ---------------------------------------------------------------------------
 
   private val varIdOf = mutable.HashMap.empty[String, Int]
@@ -40,14 +47,33 @@ final class AndersenSolver(
   @inline private def intern(packed: String): Int =
     varIdOf.getOrElseUpdate(packed, { val i = varKeys.size; varKeys += packed; i })
 
-  /** Pack a pointer variable under a context and intern it to an int id. Field slots always use [[DEFAULT_CTX]]. */
+  /** Pack a pointer variable under a context, intern it to an int id, and resolve to its union-find representative.
+    * Field slots always use [[DEFAULT_CTX]].
+    */
   @inline private def k(ctx: Int, v: String): Int =
-    intern(if (v.startsWith("F:")) s"$DEFAULT_CTX|$v" else s"$ctx|$v")
+    find(intern(if (v.startsWith("F:")) s"$DEFAULT_CTX|$v" else s"$ctx|$v"))
 
-  /** Points-to map: interned variable id → set of allocation-site indices. */
+  // ---------------------------------------------------------------------------
+  // Union-find over pointer-variable ids (cycle elimination).
+  // parent(x) absent => x is its own representative.
+  // ---------------------------------------------------------------------------
+
+  private val parent = mutable.HashMap.empty[Int, Int]
+
+  /** Representative of `x`'s equivalence class, with path compression. */
+  private def find(x: Int): Int = {
+    var root = x
+    var p    = parent.getOrElse(root, root)
+    while (p != root) { root = p; p = parent.getOrElse(root, root) }
+    var cur = x
+    while (cur != root) { val nxt = parent.getOrElse(cur, cur); parent(cur) = root; cur = nxt }
+    root
+  }
+
+  /** Points-to map: representative variable id → set of allocation-site indices. */
   private val pt = mutable.HashMap.empty[Int, PointsToSet]
 
-  /** Subset graph: for every Copy-like constraint we record an edge `srcId → dstId`. */
+  /** Subset graph: for every Copy-like constraint we record an edge `srcId → dstId` (endpoints are representatives). */
   private val subsetOut = mutable.HashMap.empty[Int, mutable.HashSet[Int]]
 
   /** Deferred field loads keyed by base id. Each entry is `(dstId, fieldName)`. */
@@ -143,29 +169,37 @@ final class AndersenSolver(
     // 2. Fixed-point worklist drain.
     while (worklist.nonEmpty) {
       worklistIterations += 1
-      val v   = worklist.dequeue()
+      val v   = find(worklist.dequeue())
       val set = pt.getOrElse(v, PointsToSet.empty)
       if (set.nonEmpty) {
         // Difference propagation: push only the indices of pt(v) not yet propagated out of v along its
         // subset edges (recorded in `propagated(v)`), instead of re-unioning the whole set every fire.
-        // New subset edges still get the full source set via addSubsetEdge; field/virtual-call discharges
-        // still read the full current set (idempotent / seen-guarded), so both remain correct.
         val prop  = propagated.getOrElseUpdate(v, mutable.BitSet.empty)
         val delta = set.diffBits(prop)
         if (delta.nonEmpty) {
           prop |= delta
+          var cycleCandidates: List[Int] = Nil
           subsetOut.get(v).foreach { outs =>
-            outs.foreach { d =>
-              val dSet = pt.getOrElseUpdate(d, PointsToSet.empty)
-              if (dSet.absorb(delta)) enqueue(d)
+            outs.foreach { d0 =>
+              val d = find(d0)
+              if (d != v) {
+                val dSet = pt.getOrElseUpdate(d, PointsToSet.empty)
+                if (dSet.absorb(delta)) enqueue(d)
+                else if (dSet.bits == set.bits && reaches(d, v)) {
+                  // v → d, d reaches v, and both sets are equal: v and d are in the same SCC.
+                  cycleCandidates = d :: cycleCandidates
+                }
+              }
             }
           }
+          // Collapse after iterating (collapse mutates subsetOut(v)).
+          cycleCandidates.foreach(d => collapse(v, d))
         }
         loadsByBase.get(v).foreach { entries =>
-          entries.foreach { case (dstK, fld) => dischargeLoad(dstK, v, fld) }
+          entries.foreach { case (dstK, fld) => dischargeLoad(find(dstK), v, fld) }
         }
         storesByBase.get(v).foreach { entries =>
-          entries.foreach { case (fld, srcK) => dischargeStore(v, fld, srcK) }
+          entries.foreach { case (fld, srcK) => dischargeStore(v, fld, find(srcK)) }
         }
         vcallsByReceiver.get(v).foreach { entries =>
           // Iterate a snapshot — discharge may append new virtual calls to the same bucket if the callee
@@ -177,6 +211,40 @@ final class AndersenSolver(
 
     // Re-key the result back to the packed variable strings for consumers ([[PointerAnalysis]]).
     pt.iterator.map { case (id, set) => varKeys(id) -> set }.toMap
+  }
+
+  /** True if `target` is reachable from `from` following subset edges (both resolved through the union-find). */
+  private def reaches(from: Int, target: Int): Boolean = {
+    val goal    = find(target)
+    val stack   = mutable.ArrayDeque[Int](find(from))
+    val visited = mutable.HashSet.empty[Int]
+    while (stack.nonEmpty) {
+      val n = find(stack.removeLast())
+      if (n == goal) return true
+      if (visited.add(n)) subsetOut.get(n).foreach(_.foreach(t => stack.append(find(t))))
+    }
+    false
+  }
+
+  /** Merge the strongly-connected representatives `a` and `b` into one (b folded into a). */
+  private def collapse(a0: Int, b0: Int): Unit = {
+    val a = find(a0)
+    val b = find(b0)
+    if (a == b) return
+    parent(b) = a
+    pt.remove(b).foreach(bSet => pt.getOrElseUpdate(a, PointsToSet.empty).absorb(bSet.bits))
+    subsetOut.remove(b).foreach { bOuts =>
+      val aOuts = subsetOut.getOrElseUpdate(a, mutable.HashSet.empty)
+      bOuts.foreach { t => val ft = find(t); if (ft != a) aOuts.add(ft) }
+    }
+    subsetOut.get(a).foreach(_.remove(a)) // drop any self-loop created by the merge
+    loadsByBase.remove(b).foreach(e => loadsByBase.getOrElseUpdate(a, mutable.ArrayBuffer.empty) ++= e)
+    storesByBase.remove(b).foreach(e => storesByBase.getOrElseUpdate(a, mutable.ArrayBuffer.empty) ++= e)
+    vcallsByReceiver.remove(b).foreach(e => vcallsByReceiver.getOrElseUpdate(a, mutable.ArrayBuffer.empty) ++= e)
+    // Conservative: reset the delta bookkeeping for the merged node and re-propagate its full set once.
+    propagated.remove(a)
+    propagated.remove(b)
+    enqueue(a)
   }
 
   // ---------------------------------------------------------------------------
@@ -265,16 +333,19 @@ final class AndersenSolver(
   /** Number of (context, method) pairs instantiated. */
   def contextCount: Int = instantiated.size
 
-  /** Number of pointer variables the solver tracks. */
+  /** Number of pointer variables the solver tracks (live representatives). */
   def variableCount: Int = pt.size
 
   /** Number of subset edges in the graph. */
   def subsetEdgeCount: Int = subsetOut.valuesIterator.map(_.size).sum
 
-  private def enqueue(v: Int): Unit = worklist.enqueue(v)
+  private def enqueue(v: Int): Unit = worklist.enqueue(find(v))
 
-  /** Add a subset edge `srcK → dstK` and immediately push whatever is already in `srcK`. */
-  private def addSubsetEdge(srcK: Int, dstK: Int): Unit = {
+  /** Add a subset edge `srcK → dstK` and immediately push whatever is already in `srcK`. Endpoints are resolved. */
+  private def addSubsetEdge(srcK0: Int, dstK0: Int): Unit = {
+    val srcK = find(srcK0)
+    val dstK = find(dstK0)
+    if (srcK == dstK) return
     val outs = subsetOut.getOrElseUpdate(srcK, mutable.HashSet.empty)
     if (outs.add(dstK)) {
       val srcSet = pt.getOrElse(srcK, PointsToSet.empty)
@@ -287,24 +358,22 @@ final class AndersenSolver(
 
   /** Wire per-type field slots for every type in `pt(baseK)` into `dstK`. */
   private def dischargeLoad(dstK: Int, baseK: Int, fld: String): Unit = {
-    val baseSet = pt.getOrElse(baseK, PointsToSet.empty)
+    val baseSet = pt.getOrElse(find(baseK), PointsToSet.empty)
     allocTable.typesOf(baseSet).foreach { t =>
-      val slotK = k(DEFAULT_CTX, PointerVar.field(t, fld))
-      addSubsetEdge(slotK, dstK)
+      addSubsetEdge(k(DEFAULT_CTX, PointerVar.field(t, fld)), dstK)
     }
   }
 
   private def dischargeStore(baseK: Int, fld: String, srcK: Int): Unit = {
-    val baseSet = pt.getOrElse(baseK, PointsToSet.empty)
+    val baseSet = pt.getOrElse(find(baseK), PointsToSet.empty)
     allocTable.typesOf(baseSet).foreach { t =>
-      val slotK = k(DEFAULT_CTX, PointerVar.field(t, fld))
-      addSubsetEdge(srcK, slotK)
+      addSubsetEdge(srcK, k(DEFAULT_CTX, PointerVar.field(t, fld)))
     }
   }
 
   /** Resolve and instantiate callees for new allocation sites in the receiver's points-to set. */
   private def dischargeVirtualCall(inst: InstantiatedVirtualCall): Unit = {
-    val rset    = pt.getOrElse(inst.receiverK, PointsToSet.empty)
+    val rset    = pt.getOrElse(find(inst.receiverK), PointsToSet.empty)
     val targets = resolvedCallTargets.getOrElseUpdate(inst.callNodeId, mutable.LinkedHashSet.empty)
 
     val allocs = rset.iterator.toArray
@@ -323,11 +392,11 @@ final class AndersenSolver(
           params.foreach { case (idx, pname) =>
             if (idx >= 1) {
               inst.argVarsK.lift(idx).foreach { argK =>
-                addSubsetEdge(argK, k(calleeCtx, PointerVar.local(calleeFullName, pname)))
+                addSubsetEdge(find(argK), k(calleeCtx, PointerVar.local(calleeFullName, pname)))
               }
             }
           }
-          addSubsetEdge(k(calleeCtx, PointerVar.ret(calleeFullName)), inst.callResultVarK)
+          addSubsetEdge(k(calleeCtx, PointerVar.ret(calleeFullName)), find(inst.callResultVarK))
         }
       }
     }
