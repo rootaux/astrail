@@ -389,4 +389,24 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe true
     }
   }
+
+  "a thrown object caught by a catch clause" should {
+    lazy val cpg = code("""
+        |class MyException extends RuntimeException { void handle() {} }
+        |class SubException extends MyException { public void handle() {} }
+        |class OtherException extends MyException { public void handle() {} }
+        |class App {
+        |  void run() {
+        |    try { throw new SubException(); }
+        |    catch (MyException e) { e.handle(); }
+        |  }
+        |}
+        |""".stripMargin)
+
+    "flow to the catch variable and resolve a dispatch on it to the thrown type" in {
+      val targets = ptaTargets(cpg, "handle")
+      targets.exists(_.startsWith("SubException.handle")) shouldBe true
+      targets.exists(_.startsWith("OtherException.handle")) shouldBe false
+    }
+  }
 }

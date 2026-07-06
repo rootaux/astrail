@@ -187,7 +187,49 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
     method.ast.isCall.filterNot(c => isOperator(c.name)).foreach { call =>
       handleCall(mfn, call)
     }
+
+    collectExceptionFlow(mfn, method)
   }
+
+  /** Bind each catch parameter to the objects thrown in the method whose type it can catch, modelling
+    * `throw obj ... catch (T e)` as a copy into `e`. Over-approximates the throw/catch pairing (any throw in the
+    * method can reach any catch) but keeps it type-sound: only a thrown object whose static type is `T` or a
+    * subtype of `T` flows to `catch (T e)`. Requires the catch parameter to be a local (see the frontend). */
+  private def collectExceptionFlow(mfn: String, method: Method): Unit = {
+    val thrown = method.ast.isCall
+      .nameExact("<operator>.throw")
+      .flatMap(t => t.argument.headOption.flatMap(op => exprVar(mfn, op).map(v => (v, thrownType(op)))))
+      .l
+    if (thrown.isEmpty) return
+    method.ast.isControlStructure.controlStructureTypeExact("CATCH").foreach { catchCs =>
+      catchCs.astChildren.isBlock.astChildren.collectAll[Local].headOption.foreach { eLocal =>
+        val catchType = eLocal.typeFullName
+        val eVar      = PointerVar.local(mfn, eLocal.name)
+        thrown.foreach { case (throwVar, throwType) =>
+          if (throwType.isEmpty || throwType == catchType || ancestorsOf(throwType).contains(catchType))
+            emit(mfn, Constraint.Copy(eVar, throwVar))
+        }
+      }
+    }
+  }
+
+  /** Static type of a thrown expression. `new T()` lowers to a Block whose own type is void/ANY, so for a Block
+    * take the type of its result (the last expression). */
+  private def thrownType(op: Expression): String = op match {
+    case b: Block => b.astChildren.collect { case e: Expression => e }.lastOption.map(typeFullNameOf).getOrElse("")
+    case other    => typeFullNameOf(other)
+  }
+
+  private lazy val typeDeclsByName: Map[String, List[TypeDecl]] = cpg.typeDecl.l.groupBy(_.fullName)
+  private val ancestorCache                                     = mutable.Map.empty[String, Set[String]]
+
+  /** Transitive supertypes of a type from the CPG's inheritance edges. */
+  private def ancestorsOf(t: String): Set[String] = ancestorCache.getOrElseUpdate(
+    t, {
+      val direct = typeDeclsByName.getOrElse(t, Nil).flatMap(_.inheritsFromTypeFullName).toSet
+      direct ++ direct.flatMap(ancestorsOf)
+    }
+  )
 
   // -------------------------------------------------------------------------
   // Assignment handling
