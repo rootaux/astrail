@@ -30,13 +30,18 @@ final class VertxCollector(override protected val cpg: Cpg) extends DiHelpers {
     result
   }
 
+  /** Guard against binding to unrelated same-named calls in other frameworks/user code: a genuine Vert.x call
+    * resolves to a method under the `io.vertx.` package. Without this, any 3-arg `register(...)` etc. would bind. */
+  private def isVertxCall(call: Call): Boolean =
+    Option(call.methodFullName).exists(_.startsWith("io.vertx."))
+
   // -------------------------------------------------------------------------
   // Verticle deployment
   // -------------------------------------------------------------------------
 
   /** Detect `deployVerticle(MyVerticle.class)` and `deployVerticle("com.example.MyVerticle")` calls. */
   private def collectVerticleDeployments(): Unit = {
-    cpg.call.nameExact("deployVerticle").foreach { call =>
+    cpg.call.nameExact("deployVerticle").filter(isVertxCall).foreach { call =>
       call.argument.argumentIndex(1).headOption.foreach { arg =>
         // Class literal: deployVerticle(MyVerticle.class)
         classLiteralType(Some(arg)).foreach(classRegistrations.add)
@@ -69,7 +74,7 @@ final class VertxCollector(override protected val cpg: Cpg) extends DiHelpers {
   /** Extract interface→impl bindings from `ServiceBinder.register` and `ProxyHelper.registerService`. */
   private def collectServiceProxyRegistrations(): Unit = {
     // ServiceBinder.register(Class<T> iface, T impl)
-    cpg.call.nameExact("register").foreach { call =>
+    cpg.call.nameExact("register").filter(isVertxCall).foreach { call =>
       val args = call.argument.l
       if (args.size >= 3) {
         val ifaceArg = classLiteralType(args.lift(1))
@@ -84,7 +89,7 @@ final class VertxCollector(override protected val cpg: Cpg) extends DiHelpers {
     }
 
     // ProxyHelper.registerService(Class<T>, Vertx, T impl, String addr)
-    cpg.call.nameExact("registerService").foreach { call =>
+    cpg.call.nameExact("registerService").filter(isVertxCall).foreach { call =>
       val args = call.argument.l
       if (args.size >= 4) {
         val ifaceArg = classLiteralType(args.lift(1))
