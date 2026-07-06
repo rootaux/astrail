@@ -111,6 +111,12 @@ final class AndersenSolver(
     */
   private val propagated = mutable.HashMap.empty[Int, mutable.BitSet]
 
+  /** Per-base record of the allocation-site indices already wired into field slots for that base's deferred
+    * loads/stores. Lets the fixpoint discharge only the newly-arrived allocations' types each fire instead of
+    * re-scanning the whole base set and rebuilding a `Set[String]` of types every time.
+    */
+  private val dischargedBaseAllocs = mutable.HashMap.empty[Int, mutable.BitSet]
+
   // ---------------------------------------------------------------------------
   // CPG lookup tables
   // ---------------------------------------------------------------------------
@@ -195,11 +201,27 @@ final class AndersenSolver(
           // Collapse after iterating (collapse mutates subsetOut(v)).
           cycleCandidates.foreach(d => collapse(v, d))
         }
-        loadsByBase.get(v).foreach { entries =>
-          entries.foreach { case (dstK, fld) => dischargeLoad(find(dstK), v, fld) }
-        }
-        storesByBase.get(v).foreach { entries =>
-          entries.foreach { case (fld, srcK) => dischargeStore(v, fld, find(srcK)) }
+        // Field discharge on base growth: wire only the types of the newly-arrived allocations into every
+        // deferred load/store slot, instead of re-scanning the whole base set on every fire (addSubsetEdge is
+        // idempotent, so re-deriving already-wired edges is pure waste). A newly *added* load/store constraint
+        // still gets the full current base set once, via dischargeLoad/dischargeStore in interpret.
+        val loadEntries  = loadsByBase.get(v)
+        val storeEntries = storesByBase.get(v)
+        if (loadEntries.isDefined || storeEntries.isDefined) {
+          val done      = dischargedBaseAllocs.getOrElseUpdate(v, mutable.BitSet.empty)
+          val newAllocs = set.diffBits(done)
+          if (newAllocs.nonEmpty) {
+            done |= newAllocs
+            val newTypes = newAllocs.iterator.map(allocTable.typeOf).toSet
+            loadEntries.foreach(_.foreach { case (dstK, fld) =>
+              val d = find(dstK)
+              newTypes.foreach(t => addSubsetEdge(k(DEFAULT_CTX, PointerVar.field(t, fld)), d))
+            })
+            storeEntries.foreach(_.foreach { case (fld, srcK) =>
+              val s = find(srcK)
+              newTypes.foreach(t => addSubsetEdge(s, k(DEFAULT_CTX, PointerVar.field(t, fld))))
+            })
+          }
         }
         vcallsByReceiver.get(v).foreach { entries =>
           // Iterate a snapshot — discharge may append new virtual calls to the same bucket if the callee
@@ -244,6 +266,8 @@ final class AndersenSolver(
     // Conservative: reset the delta bookkeeping for the merged node and re-propagate its full set once.
     propagated.remove(a)
     propagated.remove(b)
+    dischargedBaseAllocs.remove(a)
+    dischargedBaseAllocs.remove(b)
     enqueue(a)
   }
 
