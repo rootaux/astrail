@@ -106,6 +106,12 @@ final class AndersenSolver(
 
   private val worklist = mutable.Queue.empty[Int]
 
+  /** Representatives currently queued in `worklist`. Prevents enqueuing (and later fully re-processing) the same hot
+    * variable multiple times. Cleared on dequeue *before* processing, so a re-enqueue during processing still takes
+    * effect.
+    */
+  private val onWorklist = mutable.HashSet.empty[Int]
+
   /** Per-variable record of the allocation-site indices already propagated out of the variable along its
     * subset edges. Enables difference (delta) propagation: only newly-arrived indices are pushed each fire.
     */
@@ -176,6 +182,7 @@ final class AndersenSolver(
     while (worklist.nonEmpty) {
       worklistIterations += 1
       val v   = find(worklist.dequeue())
+      onWorklist.remove(v)
       val set = pt.getOrElse(v, PointsToSet.empty)
       if (set.nonEmpty) {
         // Difference propagation: push only the indices of pt(v) not yet propagated out of v along its
@@ -268,6 +275,7 @@ final class AndersenSolver(
     propagated.remove(b)
     dischargedBaseAllocs.remove(a)
     dischargedBaseAllocs.remove(b)
+    onWorklist.remove(b)
     enqueue(a)
   }
 
@@ -363,7 +371,10 @@ final class AndersenSolver(
   /** Number of subset edges in the graph. */
   def subsetEdgeCount: Int = subsetOut.valuesIterator.map(_.size).sum
 
-  private def enqueue(v: Int): Unit = worklist.enqueue(find(v))
+  private def enqueue(v0: Int): Unit = {
+    val v = find(v0)
+    if (onWorklist.add(v)) worklist.enqueue(v)
+  }
 
   /** Add a subset edge `srcK → dstK` and immediately push whatever is already in `srcK`. Endpoints are resolved. */
   private def addSubsetEdge(srcK0: Int, dstK0: Int): Unit = {
