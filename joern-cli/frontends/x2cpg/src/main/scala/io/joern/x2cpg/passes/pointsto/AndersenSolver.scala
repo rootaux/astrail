@@ -68,6 +68,11 @@ final class AndersenSolver(
 
   private val worklist = mutable.Queue.empty[String]
 
+  /** Per-variable record of the allocation-site indices already propagated out of the variable along its
+    * subset edges. Enables difference (delta) propagation: only newly-arrived indices are pushed each fire.
+    */
+  private val propagated = mutable.HashMap.empty[String, mutable.BitSet]
+
   // ---------------------------------------------------------------------------
   // CPG lookup tables
   // ---------------------------------------------------------------------------
@@ -129,10 +134,19 @@ final class AndersenSolver(
       val v   = worklist.dequeue()
       val set = pt.getOrElse(v, PointsToSet.empty)
       if (set.nonEmpty) {
-        subsetOut.get(v).foreach { outs =>
-          outs.foreach { d =>
-            val dSet = pt.getOrElseUpdate(d, PointsToSet.empty)
-            if (dSet.unionInPlace(set)) enqueue(d)
+        // Difference propagation: push only the indices of pt(v) not yet propagated out of v along its
+        // subset edges (recorded in `propagated(v)`), instead of re-unioning the whole set every fire.
+        // New subset edges still get the full source set via addSubsetEdge; field/virtual-call discharges
+        // still read the full current set (idempotent / seen-guarded), so both remain correct.
+        val prop  = propagated.getOrElseUpdate(v, mutable.BitSet.empty)
+        val delta = set.diffBits(prop)
+        if (delta.nonEmpty) {
+          prop |= delta
+          subsetOut.get(v).foreach { outs =>
+            outs.foreach { d =>
+              val dSet = pt.getOrElseUpdate(d, PointsToSet.empty)
+              if (dSet.absorb(delta)) enqueue(d)
+            }
           }
         }
         loadsByBase.get(v).foreach { entries =>
