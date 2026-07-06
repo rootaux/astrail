@@ -86,7 +86,10 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
 
       method.parameter.foreach { param =>
         val paramAnnotated = param.annotation.fullName.exists(ALL_INJECT_ANNOT.contains)
-        if (methodAnnotated || paramAnnotated || (isConstructor && constructorHasInject(method))) {
+        if (
+          methodAnnotated || paramAnnotated || (isConstructor && constructorHasInject(method)) ||
+          isSoleConstructorInjection(method)
+        ) {
           val paramType = Option(param.typeFullName).filter(_.nonEmpty).getOrElse("")
           val impls     = diBindings.implsFor(paramType)
           if (impls.nonEmpty) {
@@ -112,6 +115,17 @@ final class ConstraintCollector(cpg: Cpg, diBindings: DiBindings = DiBindings.em
       }
     }
   }
+
+  /** Types the DI collectors treat as framework-managed beans (registered classes and every bound impl). */
+  private lazy val managedTypes: Set[String] =
+    diBindings.classRegistrations ++ diBindings.interfaceToImpls.values.flatten.toSet
+
+  /** Spring 4.3+ implicit constructor injection: a DI-managed class with exactly one constructor has that
+    * constructor's parameters autowired even without an @Autowired annotation. */
+  private def isSoleConstructorInjection(method: Method): Boolean =
+    method.name == "<init>" &&
+      method.typeDecl.fullName.headOption.exists(managedTypes.contains) &&
+      method.typeDecl.method.nameExact("<init>").size == 1
 
   private def memberHasInjectAnnotation(member: Member): Boolean =
     member.astChildren.collectAll[Annotation].fullName.exists(ALL_INJECT_ANNOT.contains)

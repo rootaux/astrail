@@ -260,4 +260,22 @@ class PointerAnalysisFactoryTests extends JavaSrcCode2CpgFixture {
       targets.exists(_.startsWith("OtherHandler.handle")) shouldBe true
     }
   }
+
+  "implicit single-constructor injection (Spring 4.3+, no @Autowired)" should {
+    lazy val cpg = code("""
+        |import org.springframework.stereotype.Component;
+        |interface Greeter { String greet(); }
+        |@Component class RealGreeter implements Greeter { public String greet() { return "hi"; } }
+        |@Component class OtherGreeter implements Greeter { public String greet() { return "yo"; } }
+        |@Component class Consumer {
+        |  Consumer(Greeter g) { g.greet(); }
+        |}
+        |""".stripMargin)
+
+    "autowire the sole constructor's parameters and resolve a dispatch on them" in {
+      val targets = ptaTargets(cpg, "greet")
+      targets.exists(_.startsWith("RealGreeter.greet")) shouldBe true
+      targets.exists(_.startsWith("OtherGreeter.greet")) shouldBe true
+    }
+  }
 }
